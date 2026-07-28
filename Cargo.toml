@@ -1,0 +1,37 @@
+[package]
+name = "salcc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aho-corasick = "1.1.4"
+anyhow = "1.0.104"
+blake3 = "1.8.5"
+clap = { version = "4.6.4", features = ["derive"] }
+dirs = "6.0.0"
+futures-core = { version = "0.3.33", default-features = false }
+futures-util = { version = "0.3.33", default-features = false, features = ["std"] }
+memchr = "2.8.3"
+portable-pty = "0.9.0"
+regex = "1.13.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "http2"] }
+rustix = { version = "1.1.4", features = ["termios", "pty"] }
+scopeguard = "1.2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_norway = "0.9.42"
+signal-hook = "0.4.4"
+smol_str = "0.3.6"
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "signal", "macros", "io-util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.2"
+vt100 = "0.16.2"
+vte = "0.15.0"
+
+[dev-dependencies]
+criterion = "0.8.2"
+insta = "1.48.0"
+proptest = "1.11.0"
