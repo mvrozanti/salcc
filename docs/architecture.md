@@ -24,6 +24,20 @@ The same byte stream also feeds a raw `vte::Perform` (`term/telemetry`) for
 the low-level CUP/ED/scroll/SGR events that `vt100` abstracts away; the
 finalizer consumes those (see ADR 0002).
 
+The io_loop seam (`ChunkTransform`) carries four hooks: `transform` (per
+chunk), `flush` (50ms tick, so the hold can resolve deadlines and quiet
+gaps end bursts), `resize` (SIGWINCH mirrored via a flag the pump polls;
+the styling transform flushes its hold under the old geometry before
+resizing grid + finalizer), and `finish` (channel disconnect drains held
+bytes so child exit never swallows output). `emit/pipeline.rs` implements
+the styling transform: TEXT runs feed the grid newline-piece by
+newline-piece so each completed line captures the AbsRow + generation it
+landed on; held lines resolve on the first of scroll-finalization (eager),
+deadline, CTRL boundary, overflow, resize, or stream end — styled only
+when ScrollbackBound and generation-still-valid, raw otherwise. Non-tty
+stdout, `NO_COLOR`, `--no-style`, and unknown TERM select the identity
+transform outright (`term/caps.rs`).
+
 ## Two styling channels, one truth
 
 Styling happens twice, through different paths, against the same grid:
@@ -119,7 +133,13 @@ These are restated with rationale in CLAUDE.md; the load-bearing ones for
 - Fixtures: `salcc record -o tests/fixtures/name.cast -- <cmd>` captures a
   raw session; conformance tests replay every fixture through the proxy and
   snapshot-compare grids (insta). M0 demands byte identity; M2+ demands
-  attrs-only deltas (grid *text* identical styled vs `--no-style`).
+  attrs-only deltas (grid *text* identical styled vs `--no-style`),
+  enforced across every fixture by tests/styling.rs.
+- `salcc replay <cast>` runs a fixture through the styling transform
+  offline: cast timestamp gaps (>100ms) drive burst ends, wall-clock hold
+  deadlines never fire, verdicts settle at EOF. It shows what the emission
+  channel *can* style (scrolled rows, evidence-final rows), which is why
+  Ink-region commits replay raw — those belong to the M3 repaint channel.
 - Latency budget: p99 < 1ms per chunk through the hot path
   (`cargo bench --bench passthrough`).
 - If the data flow in this document changes, updating it is part of the

@@ -16,5 +16,6 @@
 //! - NO_COLOR / --no-style / alt-screen active => bit-perfect passthrough.
 
 pub mod hold;
+pub mod pipeline;
 pub mod segment;
 pub mod styler;
