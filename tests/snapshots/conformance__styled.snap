@@ -1,0 +1,31 @@
+---
+source: tests/conformance.rs
+expression: render_state(&grid)
+---
+styled filler line 08 with color
+styled filler line 09 with color
+styled filler line 10 with color
+styled filler line 11 with color
+styled filler line 12 with color
+styled filler line 13 with color
+styled filler line 14 with color
+styled filler line 15 with color
+styled filler line 16 with color
+styled filler line 17 with color
+styled filler line 18 with color
+styled filler line 19 with color
+styled filler line 20 with color
+styled filler line 21 with color
+styled filler line 22 with color
+styled filler line 23 with color
+styled filler line 24 with color
+styled filler line 25 with color
+styled filler line 26 with color
+styled filler line 27 with color
+styled filler line 28 with color
+styled filler line 29 with color
+styled filler line 30 with color
+after resize: a wider line that now fits in one hundred columns without wrap
+after resize bold magenta and 全角文字 again 🚀
+---
+size: 30x100 cursor: (25,0) scroll_base: 13 alt: false

@@ -1,0 +1,26 @@
+---
+source: tests/conformance.rs
+expression: render_state(&grid)
+---
+line 41 the quick brown fox jumps over the lazy dog
+line 42 abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij
+line 43 the quick brown fox jumps over the lazy dog
+line 44 col     tab     stops
+line 45 the quick brown fox jumps over the lazy dog
+line 46 the quick brown fox jumps over the lazy dog
+line 47 the quick brown fox jumps over the lazy dog
+line 48 the quick brown fox jumps over the lazy dog
+line 49 abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij
+line 50 the quick brown fox jumps over the lazy dog
+line 51 the quick brown fox jumps over the lazy dog
+line 52 the quick brown fox jumps over the lazy dog
+line 53 the quick brown fox jumps over the lazy dog
+line 54 the quick brown fox jumps over the lazy dog
+line 55 col     tab     stops
+line 56 abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij
+line 57 the quick brown fox jumps over the lazy dog
+line 58 the quick brown fox jumps over the lazy dog
+line 59 the quick brown fox jumps over the lazy dog
+line 60 the quick brown fox jumps over the lazy dog
+---
+size: 24x80 cursor: (23,0) scroll_base: 45 alt: false

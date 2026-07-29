@@ -1,0 +1,28 @@
+---
+source: tests/conformance.rs
+expression: render_state(&grid)
+---
+static line 25 — committed output
+static line 26 — committed output
+static line 27 — committed output
+static line 28 — committed output
+static line 29 — committed output
+static line 30 — committed output
+static line 31 — committed output
+static line 32 — committed output
+static line 33 — committed output
+static line 34 — committed output
+static line 35 — committed output
+static line 36 — committed output
+static line 37 — committed output
+static line 38 — committed output
+static line 39 — committed output
+static line 40 — committed output
+static line 41 — committed output
+static line 42 — committed output
+static line 43 — committed output
+static line 44 — committed output
+static line 45 — committed output
+done — 45 static lines committed
+---
+size: 24x80 cursor: (22,0) scroll_base: 24 alt: false

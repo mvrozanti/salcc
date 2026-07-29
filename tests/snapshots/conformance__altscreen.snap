@@ -1,0 +1,29 @@
+---
+source: tests/conformance.rs
+expression: render_state(&grid)
+---
+primary scrolling line 10
+primary scrolling line 11
+primary scrolling line 12
+primary scrolling line 13
+primary scrolling line 14
+primary scrolling line 15
+primary scrolling line 16
+primary scrolling line 17
+primary scrolling line 18
+primary scrolling line 19
+primary scrolling line 20
+primary scrolling line 21
+primary scrolling line 22
+primary scrolling line 23
+primary scrolling line 24
+primary scrolling line 25
+primary scrolling line 26
+primary scrolling line 27
+primary scrolling line 28
+primary scrolling line 29
+primary scrolling line 30
+back on primary line 1
+back on primary line 2
+---
+size: 24x80 cursor: (23,0) scroll_base: 9 alt: false
