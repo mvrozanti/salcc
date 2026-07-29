@@ -451,3 +451,50 @@ fn replayed_demo_contains_styling() {
     assert!(text.contains('⚠'), "demo replay lost the risk gutter glyph");
     assert!(text.contains("\x1b[2m"), "demo replay lost dim boilerplate");
 }
+
+#[test]
+fn pure_printer_finalizes_above_cursor_after_two_bursts() {
+    use salcc::term::finalize::Finalizer;
+    use salcc::term::telemetry::TermEvent;
+    use salcc::types::{AbsRow, Finality};
+
+    let mut fin = Finalizer::new(24);
+    fin.note_cursor(5);
+    assert_eq!(fin.classify(AbsRow(3)), Finality::Ambiguous);
+    fin.note_burst_end();
+    assert_eq!(fin.classify(AbsRow(3)), Finality::Ambiguous);
+    fin.note_burst_end();
+    assert_eq!(fin.classify(AbsRow(3)), Finality::ScrollbackBound);
+    assert_eq!(fin.classify(AbsRow(5)), Finality::Ambiguous);
+    fin.ingest([TermEvent::CursorTarget { row: 1, col: 0, abs_row: 1 }]);
+    assert_ne!(fin.classify(AbsRow(3)), Finality::ScrollbackBound);
+}
+
+#[test]
+fn child_exit_finalizes_everything_visible() {
+    use salcc::term::finalize::Finalizer;
+    use salcc::types::{AbsRow, Finality};
+
+    let mut fin = Finalizer::new(24);
+    assert_eq!(fin.classify(AbsRow(7)), Finality::Ambiguous);
+    fin.note_child_exit();
+    assert_eq!(fin.classify(AbsRow(7)), Finality::ScrollbackBound);
+    assert_eq!(fin.classify(AbsRow(1000)), Finality::ScrollbackBound);
+}
+
+#[test]
+fn finish_styles_held_lines_from_evidence_free_stream() {
+    let config = Config::default();
+    let mut transform = StylingTransform::new(&config, Caps::truecolor_undercurl(), 24, 80);
+    let mut out = Vec::new();
+    transform.transform(
+        b"Running `git reset --hard` now would permanently delete the hotfixes.\r\n",
+        &mut out,
+    );
+    transform.finish(&mut out);
+    let text = String::from_utf8_lossy(&out).into_owned();
+    assert!(
+        text.contains("38;2;213;94;0"),
+        "finish flushed held lines without styling: {text:?}"
+    );
+}

@@ -454,6 +454,9 @@ impl StylingTransform {
     fn ingest_events(&mut self) {
         let events = self.grid.telemetry_mut().take_events();
         self.fin.ingest(events);
+        let (cursor_row, _) = self.grid.telemetry().cursor();
+        let cursor_abs = self.grid.telemetry().scrolled_total() + u64::from(cursor_row);
+        self.fin.note_cursor(cursor_abs);
     }
 
     fn process_text_piece(&mut self, piece: &[u8], now: Instant, out: &mut Vec<u8>) {
@@ -675,10 +678,12 @@ impl ChunkTransform for StylingTransform {
         if !self.caps.styling_enabled {
             return;
         }
+        self.drain_intake();
         self.reverse_used = false;
         if self.burst_open {
             self.end_burst();
         }
+        self.fin.note_child_exit();
         self.flush_all(out);
         let pending = self.seg.take_pending();
         out.extend_from_slice(&pending);

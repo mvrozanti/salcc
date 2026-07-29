@@ -36,6 +36,14 @@
 //! they clear all evidence and suppress visible-row finalization until a
 //! clean burst completes after the disrupted one. Scrolled rows stay final
 //! throughout.
+//!
+//! Two evidence-free escapes keep plain printers styleable:
+//! - Pure-printer mode: a child that has NEVER cursor-addressed or disrupted
+//!   (cat, build logs) cannot repaint above its cursor, so after two
+//!   completed bursts rows strictly above the cursor are ScrollbackBound.
+//!   The first evidence or disruption event disables this mode permanently.
+//! - Child exit: once the child is gone no row can ever be rewritten, so
+//!   everything outside alt-screen is ScrollbackBound.
 
 use crate::term::grid::ShadowGrid;
 use crate::term::telemetry::TermEvent;
@@ -52,7 +60,14 @@ pub struct Finalizer {
     prev_min_abs: Option<u64>,
     cur_disrupted: bool,
     last_disrupted: bool,
+    ever_evidence: bool,
+    ever_disrupted: bool,
+    completed_bursts: u32,
+    cursor_abs: Option<u64>,
+    child_exited: bool,
 }
+
+const PURE_PRINTER_MIN_BURSTS: u32 = 2;
 
 impl Finalizer {
     pub fn new(rows: u16) -> Self {
@@ -66,6 +81,11 @@ impl Finalizer {
             prev_min_abs: None,
             cur_disrupted: false,
             last_disrupted: false,
+            ever_evidence: false,
+            ever_disrupted: false,
+            completed_bursts: 0,
+            cursor_abs: None,
+            child_exited: false,
         }
     }
 
@@ -105,6 +125,7 @@ impl Finalizer {
         self.last_min_abs = self.cur_min_abs.take();
         self.last_disrupted = self.cur_disrupted;
         self.cur_disrupted = false;
+        self.completed_bursts = self.completed_bursts.saturating_add(1);
         tracing::trace!(
             last_min_abs = ?self.last_min_abs,
             prev_min_abs = ?self.prev_min_abs,
@@ -118,11 +139,18 @@ impl Finalizer {
         if self.alt_screen {
             return Finality::ActiveRegion;
         }
-        if row.0 < self.scroll_base {
+        if self.child_exited || row.0 < self.scroll_base {
             return Finality::ScrollbackBound;
         }
         if self.sync_active || self.cur_disrupted || self.last_disrupted {
             return Finality::Ambiguous;
+        }
+        if !self.ever_evidence
+            && !self.ever_disrupted
+            && self.completed_bursts >= PURE_PRINTER_MIN_BURSTS
+            && self.cursor_abs.is_some_and(|cur| row.0 < cur)
+        {
+            return Finality::ScrollbackBound;
         }
         let Some(dyn_top) = self.dyn_top_abs() else {
             return Finality::Ambiguous;
@@ -161,12 +189,22 @@ impl Finalizer {
         self.alt_screen
     }
 
+    pub fn note_cursor(&mut self, abs_row: u64) {
+        self.cursor_abs = Some(abs_row);
+    }
+
+    pub fn note_child_exit(&mut self) {
+        self.child_exited = true;
+    }
+
     fn note_evidence(&mut self, abs_row: u64) {
+        self.ever_evidence = true;
         self.cur_min_abs = Some(self.cur_min_abs.map_or(abs_row, |m| m.min(abs_row)));
     }
 
     fn note_disruption(&mut self) {
         self.cur_disrupted = true;
+        self.ever_disrupted = true;
         self.cur_min_abs = None;
         self.last_min_abs = None;
         self.prev_min_abs = None;
