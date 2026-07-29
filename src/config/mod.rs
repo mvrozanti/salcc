@@ -45,6 +45,29 @@ impl Default for FacetToggles {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScorerConfig {
+    pub name: String,
+    pub model: String,
+    pub api_key_env: String,
+    pub api_key_cmd: Option<String>,
+    pub max_session_usd: f64,
+    pub min_block_words: usize,
+}
+
+impl Default for ScorerConfig {
+    fn default() -> Self {
+        Self {
+            name: "anthropic".to_string(),
+            model: "claude-haiku-4-5".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            api_key_cmd: None,
+            max_session_usd: 1.0,
+            min_block_words: 20,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub hold_ms: u64,
@@ -52,6 +75,7 @@ pub struct Config {
     pub facets: FacetToggles,
     pub theme: Theme,
     pub dimensions: Vec<UserDimension>,
+    pub scorer: ScorerConfig,
 }
 
 impl Default for Config {
@@ -62,6 +86,7 @@ impl Default for Config {
             facets: FacetToggles::default(),
             theme: Theme::default(),
             dimensions: Vec::new(),
+            scorer: ScorerConfig::default(),
         }
     }
 }
@@ -121,6 +146,29 @@ impl Config {
                 }
             }
         }
+        match raw.scorer {
+            Some(RawScorer::Name(name)) => config.scorer.name = name,
+            Some(RawScorer::Table(table)) => {
+                let scorer = &mut config.scorer;
+                if let Some(name) = table.name {
+                    scorer.name = name;
+                }
+                if let Some(model) = table.model {
+                    scorer.model = model;
+                }
+                if let Some(api_key_env) = table.api_key_env {
+                    scorer.api_key_env = api_key_env;
+                }
+                scorer.api_key_cmd = table.api_key_cmd;
+                if let Some(max_session_usd) = table.max_session_usd {
+                    scorer.max_session_usd = max_session_usd.max(0.0);
+                }
+                if let Some(min_block_words) = table.min_block_words {
+                    scorer.min_block_words = min_block_words;
+                }
+            }
+            None => {}
+        }
         for raw_dim in raw.dimensions.unwrap_or_default() {
             let name = SmolStr::from(raw_dim.name);
             let color = raw_dim.color.as_deref().and_then(Rgb::parse_hex);
@@ -164,11 +212,28 @@ struct RawConfig {
     theme: Option<RawTheme>,
     dimensions: Option<Vec<RawDimension>>,
     #[serde(default)]
-    #[allow(dead_code)]
-    scorer: Option<String>,
+    scorer: Option<RawScorer>,
     #[serde(default)]
     #[allow(dead_code)]
     profiles: Option<HashMap<String, serde_norway::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawScorer {
+    Name(String),
+    Table(RawScorerConfig),
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawScorerConfig {
+    name: Option<String>,
+    model: Option<String>,
+    api_key_env: Option<String>,
+    api_key_cmd: Option<String>,
+    max_session_usd: Option<f64>,
+    min_block_words: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
