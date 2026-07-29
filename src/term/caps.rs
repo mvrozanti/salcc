@@ -4,8 +4,9 @@
 //! styling entirely — bit-perfect passthrough is the contract there.
 //! Undercurl (SGR 4:3 + 58;2;r;g;b) is allowlisted by TERM/TERM_PROGRAM
 //! because there is no reliable query; everything else degrades to plain
-//! underline. Tests construct `Caps` directly instead of mutating the
-//! environment.
+//! underline. Synchronized update (CSI ?2026, used to wrap repaint bursts)
+//! is allowlisted the same way. Tests construct `Caps` directly instead of
+//! mutating the environment.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorDepth {
@@ -19,9 +20,11 @@ pub struct Caps {
     pub styling_enabled: bool,
     pub depth: ColorDepth,
     pub undercurl: bool,
+    pub sync_update: bool,
 }
 
 const UNDERCURL_TERMS: [&str; 6] = ["kitty", "wezterm", "foot", "alacritty", "konsole", "ghostty"];
+const SYNC_UPDATE_TERMS: [&str; 6] = ["kitty", "wezterm", "foot", "alacritty", "ghostty", "contour"];
 
 impl Caps {
     pub fn detect_for_proxy() -> Self {
@@ -65,10 +68,14 @@ impl Caps {
         let undercurl = UNDERCURL_TERMS
             .iter()
             .any(|t| term.contains(t) || program.contains(t));
+        let sync_update = SYNC_UPDATE_TERMS
+            .iter()
+            .any(|t| term.contains(t) || program.contains(t));
         let caps = Self {
             styling_enabled,
             depth,
             undercurl,
+            sync_update,
         };
         tracing::info!(?caps, term, colorterm, program, "terminal capabilities detected");
         caps
@@ -79,6 +86,7 @@ impl Caps {
             styling_enabled: false,
             depth: ColorDepth::C16,
             undercurl: false,
+            sync_update: false,
         }
     }
 
@@ -87,6 +95,7 @@ impl Caps {
             styling_enabled: true,
             depth: ColorDepth::TrueColor,
             undercurl: true,
+            sync_update: true,
         }
     }
 }

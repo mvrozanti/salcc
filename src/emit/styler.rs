@@ -20,10 +20,15 @@
 //!   the line always ends in the child's live attributes.
 //! Any line the extractor cannot model losslessly (interior CR, stray
 //! control bytes, invalid UTF-8) is refused: `None` means emit raw.
+//!
+//! The facet SGR vocabulary (`facet_sgr_params`, `fg_params`,
+//! `underline_param`, `gutter_glyph_slot`) is exposed as free functions so
+//! term/repaint.rs layers the exact same styling rules — one vocabulary,
+//! two channels.
 
 use std::ops::Range;
 
-use crate::config::theme::Theme;
+use crate::config::theme::{Rgb, Theme};
 use crate::term::caps::{Caps, ColorDepth};
 use crate::term::telemetry::SgrState;
 use crate::types::{Facet, SpanScore};
@@ -138,7 +143,7 @@ impl Styler {
     }
 
     fn gutter_glyph(&self, spans: &[SpanScore], clean: &str) -> Option<(char, Facet)> {
-        if !clean.starts_with("  ") || clean[2..].starts_with(' ') || clean.len() <= 2 {
+        if !gutter_glyph_slot(clean) {
             return None;
         }
         let dominant = spans
@@ -205,7 +210,7 @@ impl Styler {
         let color = self.theme.for_facet(facet).and_then(|t| t.color);
         let mut params: Vec<String> = vec!["1".into()];
         if let Some(color) = color {
-            params.push(self.fg_params(color));
+            params.push(fg_params(&self.caps, color));
         }
         out.extend_from_slice(format!("\x1b[{}m", params.join(";")).as_bytes());
         let mut buf = [0u8; 4];
@@ -214,52 +219,75 @@ impl Styler {
     }
 
     fn enter_sequence(&self, span: &SpanScore, state: &SgrState, reverse: bool) -> Vec<u8> {
-        let mut params: Vec<String> = Vec::new();
-        match &span.facet {
-            Facet::Dim => params.push("2".into()),
-            Facet::Uncertainty => {
-                params.push("2".into());
-                params.push(self.underline_param());
-            }
-            facet => {
-                if span.weight >= 0.7 {
-                    params.push("1".into());
-                }
-                let color = self.theme.for_facet(facet).and_then(|t| t.color);
-                let hue_allowed = state.fg.is_none() || *facet == Facet::Risk;
-                if let Some(color) = color.filter(|_| hue_allowed) {
-                    params.push(self.fg_params(color));
-                }
-                if let Facet::User(_) = facet {
-                    params.push(self.underline_param());
-                    if let (Some(color), ColorDepth::TrueColor, true) =
-                        (color, self.caps.depth, self.caps.undercurl)
-                    {
-                        params.push(format!("58;2;{};{};{}", color.r, color.g, color.b));
-                    }
-                }
-                if reverse {
-                    params.push("7".into());
-                }
-            }
-        }
+        let params = facet_sgr_params(
+            &self.theme,
+            &self.caps,
+            &span.facet,
+            span.weight,
+            state.fg.is_none(),
+            reverse,
+        );
         format!("\x1b[{}m", params.join(";")).into_bytes()
     }
+}
 
-    fn underline_param(&self) -> String {
-        if self.caps.undercurl {
-            "4:3".into()
-        } else {
-            "4".into()
+pub fn gutter_glyph_slot(clean: &str) -> bool {
+    clean.starts_with("  ") && clean.len() > 2 && !clean[2..].starts_with(' ')
+}
+
+pub fn facet_sgr_params(
+    theme: &Theme,
+    caps: &Caps,
+    facet: &Facet,
+    weight: f32,
+    child_fg_default: bool,
+    reverse: bool,
+) -> Vec<String> {
+    let mut params: Vec<String> = Vec::new();
+    match facet {
+        Facet::Dim => params.push("2".into()),
+        Facet::Uncertainty => {
+            params.push("2".into());
+            params.push(underline_param(caps));
+        }
+        facet => {
+            if weight >= 0.7 {
+                params.push("1".into());
+            }
+            let color = theme.for_facet(facet).and_then(|t| t.color);
+            let hue_allowed = child_fg_default || *facet == Facet::Risk;
+            if let Some(color) = color.filter(|_| hue_allowed) {
+                params.push(fg_params(caps, color));
+            }
+            if let Facet::User(_) = facet {
+                params.push(underline_param(caps));
+                if let (Some(color), ColorDepth::TrueColor, true) =
+                    (color, caps.depth, caps.undercurl)
+                {
+                    params.push(format!("58;2;{};{};{}", color.r, color.g, color.b));
+                }
+            }
+            if reverse {
+                params.push("7".into());
+            }
         }
     }
+    params
+}
 
-    fn fg_params(&self, color: crate::config::theme::Rgb) -> String {
-        match self.caps.depth {
-            ColorDepth::TrueColor => format!("38;2;{};{};{}", color.r, color.g, color.b),
-            ColorDepth::C256 => format!("38;5;{}", color.to_256()),
-            ColorDepth::C16 => format!("{}", color.to_16()),
-        }
+pub fn underline_param(caps: &Caps) -> String {
+    if caps.undercurl {
+        "4:3".into()
+    } else {
+        "4".into()
+    }
+}
+
+pub fn fg_params(caps: &Caps, color: Rgb) -> String {
+    match caps.depth {
+        ColorDepth::TrueColor => format!("38;2;{};{};{}", color.r, color.g, color.b),
+        ColorDepth::C256 => format!("38;5;{}", color.to_256()),
+        ColorDepth::C16 => format!("{}", color.to_16()),
     }
 }
 
