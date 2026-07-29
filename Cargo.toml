@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 aho-corasick = "1.1.4"
 anyhow = "1.0.104"
+axum = "0.8.9"
 blake3 = "1.8.5"
 clap = { version = "4.6.4", features = ["derive"] }
 dirs = "6.0.0"
@@ -23,7 +24,7 @@ serde_norway = "0.9.42"
 signal-hook = "0.4.4"
 smol_str = "0.3.6"
 thiserror = "2.0.19"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "signal", "macros", "io-util"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "time", "signal", "macros", "io-util", "net"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-segmentation = "1.13.3"

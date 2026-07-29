@@ -11,7 +11,11 @@
 //! while passing through untouched; `replay` runs a cast through the
 //! styling transform offline (cast gaps drive burst ends, verdicts settle
 //! at EOF) and writes the styled bytes to stdout — the demo and debugging
-//! tool for the emission channel.
+//! tool for the emission channel. The proxy also registers the SIGHUP
+//! config-reload flag the transform polls at its flush tick. `stats`
+//! prints the metrics.jsonl cost summary as a plain table, or with
+//! --serve hosts the localhost dashboard on a blocking current-thread
+//! runtime (stats never wraps a child, so owning the terminal is fine).
 
 use std::io::Write;
 use std::time::{Instant, SystemTime};
@@ -19,11 +23,13 @@ use std::time::{Instant, SystemTime};
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::emit::pipeline::{SessionSource, StylingTransform, spawn_side_channel};
+use crate::emit::pipeline::{CacheHitLog, SessionSource, StylingTransform, spawn_side_channel};
 use crate::proxy::io_loop::{self, ChunkTransform, IdentityTransform};
 use crate::proxy::pty;
+use crate::proxy::signals;
 use crate::score::anthropic::AnthropicScorer;
 use crate::stats::metrics::MetricsLog;
+use crate::stats::server;
 use crate::term::caps::Caps;
 
 #[derive(Parser, Debug)]
@@ -72,7 +78,7 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
     match args.command {
         Some(Command::Record { output, child }) => run_record(&output, &child),
         Some(Command::Replay { fixture }) => run_replay(&fixture, args.no_style),
-        Some(Command::Stats { .. }) => anyhow::bail!("stats: not yet implemented"),
+        Some(Command::Stats { serve, port }) => run_stats(serve, port),
         Some(Command::Doctor { .. }) => anyhow::bail!("doctor: not yet implemented"),
         None => {
             if args.child.is_empty() {
@@ -93,6 +99,7 @@ fn run_proxy(child: &[String], no_style: bool) -> anyhow::Result<i32> {
     let config = Config::load();
     let size = pty::real_terminal_size();
     let mut transform = StylingTransform::new(&config, caps, size.rows, size.cols);
+    transform.watch_reload_flag(signals::register_reload_flag());
     if config.scorer.name == "anthropic" {
         attach_anthropic_side_channel(&config, &mut transform);
     }
@@ -101,6 +108,10 @@ fn run_proxy(child: &[String], no_style: bool) -> anyhow::Result<i32> {
 
 fn attach_anthropic_side_channel(config: &Config, transform: &mut StylingTransform) {
     let metrics = MetricsLog::open_default();
+    let cache_log = CacheHitLog {
+        metrics: metrics.clone(),
+        model: config.scorer.model.clone(),
+    };
     let scorer = match AnthropicScorer::new(&config.scorer, config.dimensions.clone(), metrics) {
         Ok(scorer) => scorer,
         Err(err) => {
@@ -119,7 +130,22 @@ fn attach_anthropic_side_channel(config: &Config, transform: &mut StylingTransfo
         cwd,
         spawned_at: SystemTime::now(),
     };
-    transform.attach_score_channel(spawn_side_channel(source, Box::new(scorer)));
+    transform.attach_score_channel(spawn_side_channel(source, Box::new(scorer), Some(cache_log)));
+}
+
+fn run_stats(serve: bool, port: u16) -> anyhow::Result<()> {
+    io_loop::init_tracing();
+    let log = MetricsLog::open_default();
+    if !serve {
+        print!("{}", server::render_table(&log.read_all()));
+        return Ok(());
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async {
+        let bound = server::bind(log, port).await?;
+        println!("salcc stats dashboard: http://{}", bound.addr);
+        bound.run().await
+    })
 }
 
 fn run_record(output: &std::path::Path, child: &[String]) -> anyhow::Result<()> {

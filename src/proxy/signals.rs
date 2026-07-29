@@ -6,13 +6,19 @@
 //! receive keyboard SIGINT, so forwarding would double-signal. SIGTSTP
 //! restores termios and stops the whole process; SIGCONT re-enters raw mode
 //! and re-syncs the pty size in case the terminal changed while stopped.
+//! SIGHUP is a config-reload request: `register_reload_flag` raises an
+//! AtomicBool the styling transform polls at its flush tick (mirroring the
+//! SIGWINCH flag pattern in io_loop) and Config::load() runs on that tick;
+//! registering the handler also stops SIGHUP from killing the proxy,
+//! matching daemon reload semantics.
 
-use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, PoisonError};
 use std::thread;
 
 use anyhow::{Context, Result};
 use rustix::process::{Pid, Signal, getpid, kill_process};
-use signal_hook::consts::signal::{SIGCONT, SIGINT, SIGTERM, SIGTSTP, SIGWINCH};
+use signal_hook::consts::signal::{SIGCONT, SIGHUP, SIGINT, SIGTERM, SIGTSTP, SIGWINCH};
 use signal_hook::iterator::Signals;
 
 use super::pty::{self, SharedMaster};
@@ -45,6 +51,17 @@ pub fn spawn_signal_thread(
         })
         .context("signal thread spawn failed")?;
     Ok(())
+}
+
+pub fn register_reload_flag() -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    match signal_hook::flag::register(SIGHUP, flag.clone()) {
+        Ok(_) => tracing::debug!("SIGHUP config-reload flag registered"),
+        Err(err) => {
+            tracing::warn!(%err, "SIGHUP registration failed; config reload unavailable this session");
+        }
+    }
+    flag
 }
 
 fn resize_child_pty(master: &SharedMaster) {

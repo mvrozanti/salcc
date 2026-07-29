@@ -91,7 +91,7 @@ fn append_line(path: &Path, line: &str) {
 
 fn attach_fake_channel(session: PathBuf, transform: &mut StylingTransform) {
     let reader = TailReader::attach(session, None).unwrap();
-    let rx = spawn_side_channel(SessionSource::Attached(reader), Box::new(novelty_scorer()));
+    let rx = spawn_side_channel(SessionSource::Attached(reader), Box::new(novelty_scorer()), None);
     transform.attach_score_channel(rx);
 }
 

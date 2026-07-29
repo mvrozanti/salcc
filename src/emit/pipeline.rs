@@ -31,17 +31,29 @@
 //! exactly once across the kept blocks gets the overlapping spans projected
 //! onto it through the shared normalize_markdown source maps — any
 //! ambiguity skips the merge (fail-safe). Scoring errors drop the block; a
-//! dead channel degrades silently to heuristics-only.
+//! dead channel degrades silently to heuristics-only. Heuristic and merged
+//! LLM spans meet in score::cascade::merge at emission: same-facet overlaps
+//! resolve to max weight and zero-weight LLM spans veto heuristic spans
+//! where the VetoPolicy allows (never Risk). Cache hits append a
+//! zero-token, zero-usd metrics record so the stats dashboard can report
+//! cache-hit rate; real API calls log themselves inside the scorer. Scored
+//! blocks also feed ConvoContext.recent_block_summaries (first line, most
+//! recent 4) so later scoring calls carry cheap session context. A SIGHUP
+//! reload flag (signals::register_reload_flag) is polled at the flush tick:
+//! when raised, Config::load() re-derives the emission-side knobs (theme,
+//! density, hold_ms, facet toggles, dimensions, veto policy) in place —
+//! the async scorer keeps its spawn-time config.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use memchr::memmem;
 
-use crate::config::Config;
+use crate::config::{Config, VetoPolicy};
 use crate::config::theme::Theme;
 use crate::emit::hold::{HOLD_CAP, HeldLine, Hold};
 use crate::emit::segment::{RunKind, Segmenter};
@@ -49,8 +61,11 @@ use crate::emit::styler::Styler;
 use crate::map::locate::map_spans;
 use crate::map::normalize::normalize_markdown;
 use crate::proxy::io_loop::ChunkTransform;
+use crate::score::anthropic::block_id;
 use crate::score::cache::ScoreCache;
+use crate::score::cascade;
 use crate::score::heuristic::HeuristicScorer;
+use crate::stats::metrics::{MetricsLog, Record};
 use crate::tail::discover;
 use crate::tail::reader::TailReader;
 use crate::term::caps::Caps;
@@ -65,6 +80,8 @@ const REPAINT_MIN_INTERVAL: Duration = Duration::from_millis(100);
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(30);
 const RECENT_SCORED_CAP: usize = 8;
 const MERGE_MIN_NORM_LEN: usize = 3;
+const CTX_SUMMARY_CAP: usize = 4;
+const CTX_SUMMARY_CHARS: usize = 96;
 pub const CLAUDE_GUTTERS: [&str; 3] = ["⏺ ", "│ ", "  "];
 
 pub struct ScoredBlock {
@@ -74,23 +91,37 @@ pub struct ScoredBlock {
     pub spans: Arc<Vec<SpanScore>>,
 }
 
+pub struct CacheHitLog {
+    pub metrics: MetricsLog,
+    pub model: String,
+}
+
 pub enum SessionSource {
     Discover { cwd: PathBuf, spawned_at: SystemTime },
     Attached(TailReader),
 }
 
-pub fn spawn_side_channel(source: SessionSource, scorer: Box<dyn Scorer>) -> Receiver<ScoredBlock> {
+pub fn spawn_side_channel(
+    source: SessionSource,
+    scorer: Box<dyn Scorer>,
+    cache_log: Option<CacheHitLog>,
+) -> Receiver<ScoredBlock> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("salcc-score".into())
-        .spawn(move || side_channel_thread(source, scorer, tx));
+        .spawn(move || side_channel_thread(source, scorer, cache_log, tx));
     if let Err(err) = spawned {
         tracing::warn!(%err, "scoring thread failed to spawn; styling continues heuristics-only");
     }
     rx
 }
 
-fn side_channel_thread(source: SessionSource, scorer: Box<dyn Scorer>, tx: Sender<ScoredBlock>) {
+fn side_channel_thread(
+    source: SessionSource,
+    scorer: Box<dyn Scorer>,
+    cache_log: Option<CacheHitLog>,
+    tx: Sender<ScoredBlock>,
+) {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
@@ -98,11 +129,16 @@ fn side_channel_thread(source: SessionSource, scorer: Box<dyn Scorer>, tx: Sende
             return;
         }
     };
-    runtime.block_on(score_new_blocks(source, scorer, tx));
+    runtime.block_on(score_new_blocks(source, scorer, cache_log, tx));
     tracing::debug!("scoring side channel thread exited");
 }
 
-async fn score_new_blocks(source: SessionSource, scorer: Box<dyn Scorer>, tx: Sender<ScoredBlock>) {
+async fn score_new_blocks(
+    source: SessionSource,
+    scorer: Box<dyn Scorer>,
+    cache_log: Option<CacheHitLog>,
+    tx: Sender<ScoredBlock>,
+) {
     let Some(reader) = resolve_reader(source).await else {
         return;
     };
@@ -111,7 +147,7 @@ async fn score_new_blocks(source: SessionSource, scorer: Box<dyn Scorer>, tx: Se
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ctx = ConvoContext {
+    let mut ctx = ConvoContext {
         session_id,
         ..ConvoContext::default()
     };
@@ -139,6 +175,20 @@ async fn score_new_blocks(source: SessionSource, scorer: Box<dyn Scorer>, tx: Se
                     spans = spans.len(),
                     "block scored"
                 );
+                if cache_hit && let Some(cache_log) = &cache_log {
+                    cache_log.metrics.append(&Record {
+                        ts: Record::now_ms(),
+                        session: ctx.session_id.clone(),
+                        block_id: block_id(&block.block_text),
+                        model: cache_log.model.clone(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        usd: 0.0,
+                        spans_returned: spans.len(),
+                        cache_hit: true,
+                    });
+                }
+                note_block_summary(&mut ctx, &block.block_text);
                 let delivery = tx.send(ScoredBlock {
                     message_id: block.message_id,
                     block_index,
@@ -157,6 +207,18 @@ async fn score_new_blocks(source: SessionSource, scorer: Box<dyn Scorer>, tx: Se
                 "block scoring failed; block dropped without retry"
             ),
         }
+    }
+}
+
+fn note_block_summary(ctx: &mut ConvoContext, block_text: &str) {
+    let first_line = block_text.lines().find(|line| !line.trim().is_empty());
+    let Some(first_line) = first_line else {
+        return;
+    };
+    let summary: String = first_line.trim().chars().take(CTX_SUMMARY_CHARS).collect();
+    ctx.recent_block_summaries.push(summary);
+    if ctx.recent_block_summaries.len() > CTX_SUMMARY_CAP {
+        ctx.recent_block_summaries.remove(0);
     }
 }
 
@@ -211,6 +273,8 @@ pub struct StylingTransform {
     recent_scored: VecDeque<RecentBlock>,
     engine: RepaintEngine,
     last_repaint: Option<Instant>,
+    veto_policy: VetoPolicy,
+    reload: Option<Arc<AtomicBool>>,
 }
 
 impl StylingTransform {
@@ -235,11 +299,38 @@ impl StylingTransform {
             recent_scored: VecDeque::new(),
             engine: RepaintEngine::new(),
             last_repaint: None,
+            veto_policy: config.llm_can_veto.clone(),
+            reload: None,
         }
     }
 
     pub fn attach_score_channel(&mut self, intake: Receiver<ScoredBlock>) {
         self.intake = Some(intake);
+    }
+
+    pub fn watch_reload_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.reload = Some(flag);
+    }
+
+    fn maybe_reload_config(&mut self) {
+        let reload_requested = self
+            .reload
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::Relaxed));
+        if !reload_requested {
+            return;
+        }
+        let config = Config::load();
+        self.styler = Styler::new(config.theme.clone(), self.caps, config.density_budget);
+        self.scorer = HeuristicScorer::new(&config);
+        self.theme = config.theme.clone();
+        self.hold_ms = Duration::from_millis(config.hold_ms);
+        self.veto_policy = config.llm_can_veto.clone();
+        tracing::info!(
+            hold_ms = config.hold_ms,
+            density_budget = config.density_budget,
+            "SIGHUP: config reloaded into emission pipeline (async scorer keeps spawn-time config)"
+        );
     }
 
     pub fn scored_block_count(&self) -> usize {
@@ -411,9 +502,9 @@ impl StylingTransform {
         {
             let allow_reverse = !self.reverse_used;
             let styled = self.styler.style_line(&line.bytes, &line.sgr_before, allow_reverse, |clean| {
-                let mut spans = self.scorer.score_line(clean);
-                spans.extend(merge_cached_spans(&self.recent_scored, clean));
-                spans
+                let heuristic = self.scorer.score_line(clean);
+                let llm = merge_cached_spans(&self.recent_scored, clean);
+                cascade::merge(&heuristic, &llm, &self.veto_policy)
             });
             if let Some(styled) = styled {
                 tracing::trace!(row = line.row.0, "line emitted styled");
@@ -453,8 +544,8 @@ fn project_norm_range(map: &[usize], span: &SpanScore) -> Option<std::ops::Range
 
 fn strip_gutter(line: &str) -> (usize, &str) {
     for gutter in CLAUDE_GUTTERS {
-        if line.starts_with(gutter) {
-            return (gutter.len(), &line[gutter.len()..]);
+        if let Some(rest) = line.strip_prefix(gutter) {
+            return (gutter.len(), rest);
         }
     }
     (0, line)
@@ -546,6 +637,7 @@ impl ChunkTransform for StylingTransform {
         if !self.caps.styling_enabled {
             return;
         }
+        self.maybe_reload_config();
         self.drain_intake();
         let now = Instant::now();
         self.reverse_used = false;

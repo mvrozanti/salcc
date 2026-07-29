@@ -22,6 +22,15 @@ side channel (own thread, current-thread tokio runtime):
                   ≥100ms ∧ ≥100ms since last batch)
              ──► (b) recent-block store (8) ──► emission merge for lines
                   styled after their block was scored
+emission scoring: heuristic spans + merged LLM spans ──► score/cascade merge
+  (same-facet overlap: max weight wins; zero-weight LLM span vetoes a
+  heuristic span where config llm_can_veto allows — NEVER Risk) ──► styler
+config reload: SIGHUP ──► signal_hook flag ──► transform re-runs
+  Config::load() at the next flush tick (theme, density, hold_ms, facet
+  toggles, dimensions, veto policy; the async scorer keeps spawn-time config)
+cost metrics: every API call logged by the scorer, every cache hit logged
+  as a zero-token zero-usd record by the side channel ──► metrics.jsonl ──►
+  `salcc stats` table / `salcc stats --serve` localhost dashboard
 ```
 
 The shadow grid (`term/grid`) is the single source of truth about what is on

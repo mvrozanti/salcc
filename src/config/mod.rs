@@ -3,8 +3,11 @@
 //! Covers scorer selection (default: anthropic/claude-haiku-4-5), hold_ms,
 //! density_budget, per-facet toggles, theme overrides (Okabe-Ito defaults),
 //! user-defined semantic dimensions (keywords -> aho-corasick rules + llm_hint
-//! injected into the LLM prompt), per-command profiles (claude: transcript
-//! tail + gutters; "*": grid-text scoring only).
+//! injected into the LLM prompt), llm_can_veto (per-facet map deciding which
+//! heuristic facets a zero-weight LLM span may suppress in the cascade —
+//! Risk is a hard invariant, never vetoable, any yaml override is warned and
+//! ignored), per-command profiles (claude: transcript tail + gutters; "*":
+//! grid-text scoring only).
 //!
 //! Evidence-locked defaults (do not change without reading docs/research.md):
 //! dim-first on, density_budget 0.12, no blink ever, hues carry category
@@ -21,6 +24,45 @@ use smol_str::SmolStr;
 
 use dimensions::UserDimension;
 use theme::{FacetTheme, Rgb, Theme};
+
+use crate::types::Facet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VetoPolicy {
+    pub action: bool,
+    pub command: bool,
+    pub uncertainty: bool,
+    pub dim: bool,
+    pub novelty: bool,
+    pub user: HashMap<SmolStr, bool>,
+}
+
+impl Default for VetoPolicy {
+    fn default() -> Self {
+        Self {
+            action: true,
+            command: true,
+            uncertainty: true,
+            dim: true,
+            novelty: true,
+            user: HashMap::new(),
+        }
+    }
+}
+
+impl VetoPolicy {
+    pub fn allows(&self, facet: &Facet) -> bool {
+        match facet {
+            Facet::Risk => false,
+            Facet::Action => self.action,
+            Facet::Command => self.command,
+            Facet::Uncertainty => self.uncertainty,
+            Facet::Dim => self.dim,
+            Facet::Novelty => self.novelty,
+            Facet::User(name) => self.user.get(name).copied().unwrap_or(true),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FacetToggles {
@@ -76,6 +118,7 @@ pub struct Config {
     pub theme: Theme,
     pub dimensions: Vec<UserDimension>,
     pub scorer: ScorerConfig,
+    pub llm_can_veto: VetoPolicy,
 }
 
 impl Default for Config {
@@ -87,6 +130,7 @@ impl Default for Config {
             theme: Theme::default(),
             dimensions: Vec::new(),
             scorer: ScorerConfig::default(),
+            llm_can_veto: VetoPolicy::default(),
         }
     }
 }
@@ -169,6 +213,23 @@ impl Config {
             }
             None => {}
         }
+        for (facet, allowed) in raw.llm_can_veto.unwrap_or_default() {
+            let veto = &mut config.llm_can_veto;
+            match facet.as_str() {
+                "risk" => tracing::warn!(
+                    requested = allowed,
+                    "llm_can_veto.risk ignored: risk veto is a hard invariant, never configurable"
+                ),
+                "action" => veto.action = allowed,
+                "command" => veto.command = allowed,
+                "uncertainty" => veto.uncertainty = allowed,
+                "dim" => veto.dim = allowed,
+                "novelty" => veto.novelty = allowed,
+                user => {
+                    veto.user.insert(SmolStr::from(user), allowed);
+                }
+            }
+        }
         for raw_dim in raw.dimensions.unwrap_or_default() {
             let name = SmolStr::from(raw_dim.name);
             let color = raw_dim.color.as_deref().and_then(Rgb::parse_hex);
@@ -213,6 +274,7 @@ struct RawConfig {
     dimensions: Option<Vec<RawDimension>>,
     #[serde(default)]
     scorer: Option<RawScorer>,
+    llm_can_veto: Option<HashMap<String, bool>>,
     #[serde(default)]
     #[allow(dead_code)]
     profiles: Option<HashMap<String, serde_norway::Value>>,
