@@ -3,6 +3,8 @@
 
 use clap::{Parser, Subcommand};
 
+use crate::proxy::io_loop;
+
 #[derive(Parser, Debug)]
 #[command(name = "salcc", about = "Semantic attention layer for terminal AI agents", version)]
 pub struct Cli {
@@ -55,7 +57,8 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
             if args.child.is_empty() {
                 anyhow::bail!("usage: salcc <command...>  (e.g. `salcc claude`)");
             }
-            anyhow::bail!("proxy: not yet implemented")
+            let code = io_loop::run(&args.child, &mut io_loop::IdentityTransform)?;
+            std::process::exit(code)
         }
     }
 }
