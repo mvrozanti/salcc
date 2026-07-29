@@ -13,6 +13,7 @@
 //! text-unchanged since scoring. Never rows >= the dynamic-region top.
 
 pub mod caps;
+pub mod doctor;
 pub mod finalize;
 pub mod grid;
 pub mod repaint;

@@ -18,6 +18,7 @@
 //! - Reverse video: at most one Risk span (weight >= 0.9) per flush batch.
 //! - Every styled region exits by restoring the child's exact SGR state, so
 //!   the line always ends in the child's live attributes.
+//!
 //! Any line the extractor cannot model losslessly (interior CR, stray
 //! control bytes, invalid UTF-8) is refused: `None` means emit raw.
 //!

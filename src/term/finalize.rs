@@ -27,6 +27,7 @@
 //!   one-burst dip in the child's repaint height (Ink frames fluctuate).
 //! - The running burst's minimum can lower dyn_top mid-burst but never counts
 //!   as sole evidence, because an unfinished burst may still target higher.
+//!
 //! Evidence rows come from CursorTarget, EraseLine, and EraseDisplay-below
 //! events.
 //!

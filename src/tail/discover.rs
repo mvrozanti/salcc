@@ -62,11 +62,11 @@ pub async fn watch_for_new_session(cwd: &Path, after: SystemTime) -> PathBuf {
 pub async fn watch_for_new_session_in(root: &Path, cwd: &Path, after: SystemTime) -> PathBuf {
     let dir = project_dir_in(root, cwd);
     loop {
-        if let Some((path, modified)) = newest_jsonl(&dir) {
-            if modified > after {
-                tracing::debug!(?path, "new session file appeared");
-                return path;
-            }
+        if let Some((path, modified)) = newest_jsonl(&dir)
+            && modified > after
+        {
+            tracing::debug!(?path, "new session file appeared");
+            return path;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }

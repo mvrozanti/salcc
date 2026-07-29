@@ -384,10 +384,12 @@ fn corpus() -> Vec<(&'static str, &'static str)> {
 
 #[test]
 fn heuristic_precision_floors_hold_on_corpus() {
-    assert!(RISK_COMMAND_PRECISION >= 0.85);
-    assert!(RISK_PROSE_PRECISION >= 0.85);
-    assert!(COMMAND_PRECISION >= 0.85);
-    assert!(ACTION_PRECISION >= 0.85);
+    const {
+        assert!(RISK_COMMAND_PRECISION >= 0.85);
+        assert!(RISK_PROSE_PRECISION >= 0.85);
+        assert!(COMMAND_PRECISION >= 0.85);
+        assert!(ACTION_PRECISION >= 0.85);
+    }
     let scorer = scorer();
     let corpus = corpus();
     assert!(corpus.len() >= 30, "corpus must stay >= 30 labeled snippets");

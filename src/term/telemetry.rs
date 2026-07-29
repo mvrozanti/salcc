@@ -392,11 +392,9 @@ impl TelemetryState {
                     self.gm().origin_mode = set;
                     self.set_pos(0, 0);
                 }
-                (2026, _) => {
-                    if self.sync_active != set {
-                        self.sync_active = set;
-                        self.events.push(TermEvent::SyncUpdate { active: set });
-                    }
+                (2026, _) if self.sync_active != set => {
+                    self.sync_active = set;
+                    self.events.push(TermEvent::SyncUpdate { active: set });
                 }
                 _ => {}
             }

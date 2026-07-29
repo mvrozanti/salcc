@@ -1,5 +1,6 @@
 //! CLI surface. `salcc <cmd...>` wraps a child; subcommands are reserved
-//! words that cannot collide with wrapping (record/replay/stats/doctor).
+//! words that cannot collide with wrapping
+//! (record/replay/stats/doctor/completions).
 //! Transform selection: `--no-style`, `NO_COLOR`, a non-tty stdout, or an
 //! unknown terminal select the identity transform (bit-perfect passthrough);
 //! otherwise the styling pipeline runs, and when the configured scorer is
@@ -16,6 +17,10 @@
 //! prints the metrics.jsonl cost summary as a plain table, or with
 //! --serve hosts the localhost dashboard on a blocking current-thread
 //! runtime (stats never wraps a child, so owning the terminal is fine).
+//! `doctor` (term/doctor.rs) reports capability detection, config parse
+//! status, key resolution, transcript discovery, and metrics state;
+//! `completions` emits clap_complete output for zsh/bash/fish to stdout.
+//! Both own the terminal — no child — so printing to stdout is correct.
 
 use std::io::Write;
 use std::time::{Instant, SystemTime};
@@ -72,6 +77,10 @@ pub enum Command {
         #[arg(long)]
         verify: bool,
     },
+    /// Emit shell completions to stdout
+    Completions {
+        shell: clap_complete::Shell,
+    },
 }
 
 pub fn run(args: Cli) -> anyhow::Result<()> {
@@ -79,7 +88,16 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
         Some(Command::Record { output, child }) => run_record(&output, &child),
         Some(Command::Replay { fixture }) => run_replay(&fixture, args.no_style),
         Some(Command::Stats { serve, port }) => run_stats(serve, port),
-        Some(Command::Doctor { .. }) => anyhow::bail!("doctor: not yet implemented"),
+        Some(Command::Doctor { verify }) => crate::term::doctor::run(verify),
+        Some(Command::Completions { shell }) => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut cmd, "salcc", &mut script);
+            match std::io::stdout().write_all(&script) {
+                Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                other => Ok(other?),
+            }
+        }
         None => {
             if args.child.is_empty() {
                 anyhow::bail!("usage: salcc <command...>  (e.g. `salcc claude`)");

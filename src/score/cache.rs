@@ -62,6 +62,10 @@ impl ScoreCache {
         self.inner.lock().await.by_hash.len()
     }
 
+    pub async fn is_empty(&self) -> bool {
+        self.inner.lock().await.by_hash.is_empty()
+    }
+
     pub async fn get(&self, text: &str) -> Option<Arc<Vec<SpanScore>>> {
         self.inner.lock().await.by_hash.get(&cache_key(text)).cloned()
     }

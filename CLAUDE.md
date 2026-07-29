@@ -17,7 +17,7 @@ UNCERTAINTY (dim/undercurl), plus DIM for boilerplate.
 | Path | Responsibility |
 |---|---|
 | `src/proxy/` | PTY spawn + passthrough hot path (io_loop = every byte flows here) |
-| `src/term/` | Shadow vt100 grid, vte telemetry, **finalize.rs = correctness linchpin**, visible-region repaint, capability detection |
+| `src/term/` | Shadow vt100 grid, vte telemetry, **finalize.rs = correctness linchpin**, visible-region repaint, capability detection, `salcc doctor` |
 | `src/emit/` | TEXT/CTRL segmentation, hold buffer, emission-time styler (SGR merge, density budget) |
 | `src/score/` | Scorer trait impls: heuristic (instant), anthropic (Haiku, default), cascade merge, cache |
 | `src/map/` | Clean-text span → grid cell mapping (normalize, anchor, quote locate) |
@@ -56,6 +56,8 @@ cargo nextest run           # tests (or: cargo test)
 cargo clippy -- -D warnings
 cargo bench --bench passthrough   # latency budget: p99 < 1ms per chunk
 cargo insta review          # review grid snapshot changes
+cargo run -- doctor --verify      # caps/config/key/transcript diagnosis + PTY self-check
+cargo run -- completions zsh      # shell completions (zsh/bash/fish) to stdout
 ```
 
 Fixture workflow: `salcc record -o tests/fixtures/name.cast -- <cmd>` records

@@ -19,7 +19,6 @@ use std::time::Duration;
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use smol_str::SmolStr;
 
 use crate::config::ScorerConfig;
 use crate::config::dimensions::UserDimension;
@@ -178,7 +177,7 @@ fn facet_from_name(name: &str, dimensions: &[UserDimension]) -> Option<Facet> {
         other => dimensions
             .iter()
             .find(|dim| dim.name == other)
-            .map(|dim| Facet::User(SmolStr::from(dim.name.clone()))),
+            .map(|dim| Facet::User(dim.name.clone())),
     }
 }
 

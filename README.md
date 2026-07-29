@@ -47,11 +47,15 @@ gutter glyph so no meaning depends on color alone.
 
 ## Status
 
-**Early development — not yet usable.** M0 (transparent PTY passthrough)
-and M1 (shadow terminal grid + finalization detection) are in progress;
-styling milestones come after. The research and design are settled
-(`docs/research.md`, `docs/decisions/`); the code is being built against
-them. Expect nothing to work yet.
+**Working alpha.** Milestones M0–M4 are complete: transparent PTY
+passthrough, shadow-grid finalization, heuristic emission styling, async
+Haiku scoring with visible-region repaint, cascade merge with user-defined
+dimensions, and the cost metrics dashboard (`salcc stats --serve`) are all
+live and covered by the test suite (conformance fixtures, attrs-only
+styling checks, PTY integration). Deferred by decision: an Ollama/local
+scorer backend, codex/gemini transcript profiles, and the self-annotation
+mode (ADR 0005). Interfaces and the config schema may still change before
+0.2.
 
 ## Quickstart
 
@@ -69,33 +73,45 @@ salcc claude
 the Claude Code transcript for clean text to score. Escape hatches:
 `NO_COLOR=1` or `salcc --no-style <cmd>` for bit-perfect passthrough.
 
+```sh
+salcc doctor                 # terminal caps, config parse status, key
+                             # resolution, transcript discovery, metrics
+salcc doctor --verify        # + PTY round-trip byte-identity self-check
+salcc completions zsh        # shell completions (zsh/bash/fish) to stdout
+```
+
+`salcc doctor` is where config problems surface: YAML parse errors print
+verbatim there (the proxy itself silently falls back to defaults, because
+it owns your terminal).
+
 ## Configuration
 
 `~/.config/salcc/config.yaml` (SIGHUP reloads):
 
 ```yaml
-scorer: anthropic            # anthropic | heuristic | cascade
-anthropic:
+scorer:
+  name: anthropic            # anthropic | heuristic
   model: claude-haiku-4-5
   api_key_env: ANTHROPIC_API_KEY
-  session_budget_usd: 0.50   # hard stop when exceeded
+  max_session_usd: 0.50      # hard stop when exceeded
+  min_block_words: 20        # shorter blocks are never sent to the LLM
 hold_ms: 150
 density_budget: 0.12
+facets:                      # per-facet toggles, all default true
+  novelty: true
 theme:
-  action:      { hue: "#0072B2", glyph: "▶" }
-  risk:        { hue: "#D55E00", glyph: "⚠" }
-  command:     { hue: "#009E73", glyph: "❯" }
-  novelty:     { hue: "#CC79A7", glyph: "◆" }
-  uncertainty: { style: undercurl }
+  action:      { color: "#0072B2", glyph: "▶" }
+  risk:        { color: "#D55E00", glyph: "⚠" }
+  command:     { color: "#009E73", glyph: "❯" }
+  novelty:     { color: "#CC79A7", glyph: "◆" }
 dimensions:                  # your own facets
-  security:
+  - name: security
     keywords: [password, token, credential]
+    color: "#E69F00"
+    glyph: "◈"
     llm_hint: "credential handling and secret exposure"
-    facet: risk
-    weight: 0.9
-profiles:
-  claude: { transcript_tail: true }
-  "*":    { transcript_tail: false }
+llm_can_veto:                # which heuristic facets a zero-weight LLM
+  uncertainty: true          # span may suppress; risk is never vetoable
 ```
 
 ## Cost transparency

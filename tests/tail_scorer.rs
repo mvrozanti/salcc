@@ -5,7 +5,6 @@
 //! #[ignore]d, runs only with ANTHROPIC_API_KEY set and SALCC_LIVE_TEST=1.
 
 use std::fs::{self, FileTimes, OpenOptions};
-use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -338,19 +337,15 @@ fn metrics_log_roundtrips_records() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-fn scoring_future(
-    calls: &AtomicUsize,
-) -> impl Future<Output = anyhow::Result<Vec<SpanScore>>> + '_ {
-    async move {
-        calls.fetch_add(1, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        Ok(vec![SpanScore::new(
-            0..9,
-            Facet::Action,
-            0.9,
-            SourceId::Anthropic,
-        )])
-    }
+async fn scoring_future(calls: &AtomicUsize) -> anyhow::Result<Vec<SpanScore>> {
+    calls.fetch_add(1, Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    Ok(vec![SpanScore::new(
+        0..9,
+        Facet::Action,
+        0.9,
+        SourceId::Anthropic,
+    )])
 }
 
 #[tokio::test]
