@@ -13,9 +13,15 @@ user stdin ──raw, never held──► PTY master ──► child (claude/cod
 child output ──► vt100 shadow grid + vte telemetry (cursor/scroll/SGR events)
              ──► finalization detector (scrollback-bound vs CC's Ink active-repaint region)
              ──► segmenter (TEXT runs vs CTRL runs) ──► hold buffer (≤150ms, line-atomic)
-             ──► emission styler (heuristics NOW + cached LLM spans) ──► real tty
-side channel: transcript JSONL tail ──► scorer pool (async) ──► span→grid mapper
-             ──► repaint queue ──► visible-region repaint (diff, child-quiet gated)
+             ──► emission styler (heuristics NOW + merged LLM spans) ──► real tty
+side channel (own thread, current-thread tokio runtime):
+  transcript JSONL tail ──► score cache ──► anthropic scorer (async)
+             ──► std mpsc ──► transform drains via try_recv (never awaits)
+             ──► (a) span→grid mapper ──► repaint queue ──► visible-region
+                  repaint batch (flush tick; hold drained ∧ child-quiet
+                  ≥100ms ∧ ≥100ms since last batch)
+             ──► (b) recent-block store (8) ──► emission merge for lines
+                  styled after their block was scored
 ```
 
 The shadow grid (`term/grid`) is the single source of truth about what is on
@@ -55,6 +61,26 @@ Styling happens twice, through different paths, against the same grid:
    repainting those rows in place. Batches are wrapped in synchronized
    update (CSI ?2026), throttled to ≤1 repaint burst per 100ms, and the
    cursor is restored from the shadow grid afterward.
+
+The sync/async bridge (`emit/pipeline.rs`): the ChunkTransform runs
+synchronously on the io_loop thread while scoring is tokio-async, so
+`spawn_side_channel` runs a dedicated thread hosting a current-thread
+tokio runtime (session discovery → tail → cache → scorer) and delivers
+`(TextBlock, Arc<Vec<SpanScore>>)` over a std mpsc channel. The transform
+drains it with a `try_recv` loop at the top of `transform`/`flush` — the
+hot path never awaits, and a disconnected channel silently degrades to
+heuristics-only. Each scored block feeds both channels: its spans are
+mapped against the current grid window (visible rows plus one screen of
+scrollback margin — build_batch drops anything no longer visible) and
+queued for repaint, and the block itself is kept (most recent 8) so a
+held line whose normalized clean text occurs exactly once across kept
+blocks gets the overlapping spans projected onto it at emission through
+the shared `normalize_markdown` source maps; any ambiguity skips the
+merge. Repaint bytes are appended from the flush tick only after the
+hold has fully drained, never interleaved inside a held line. `salcc
+claude` wires this up when the configured scorer is `anthropic`
+(`cli.rs`, SystemTime captured before child spawn for discovery); a
+missing API key logs one warning and runs heuristics-only.
 
 The repaint channel must never touch Claude Code's active repaint region:
 rows at or below the dynamic-region top (the minimum cursor row of the last

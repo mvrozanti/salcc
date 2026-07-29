@@ -14,22 +14,184 @@
 //! one span per flush batch. Replay drives the same object offline via
 //! `note_virtual_quiet` + `finish`, where wall-clock deadlines simply never
 //! fire and verdicts settle at end of cast.
+//!
+//! Async scoring side channel: `spawn_side_channel` runs a dedicated thread
+//! hosting a current-thread tokio runtime that discovers the Claude Code
+//! session transcript (watch-for-new with a 30s timeout, falling back to the
+//! most recent existing session), tails it, scores each new text block
+//! through the injected `Scorer` behind the dedupe cache, and delivers
+//! `ScoredBlock`s over a std mpsc channel. The transform drains that channel
+//! non-blockingly (try_recv) at the top of `transform`/`flush` — it never
+//! awaits. Each scored block is consumed twice: (1) spans are mapped onto
+//! the current grid window and queued on the RepaintEngine, whose batches
+//! are appended from the flush tick only after the hold has fully drained,
+//! the child has been quiet >= 100ms, and >= 100ms passed since the last
+//! batch; (2) the block is kept (most recent 8) so lines styled later at
+//! emission merge its spans: a held line whose normalized clean text occurs
+//! exactly once across the kept blocks gets the overlapping spans projected
+//! onto it through the shared normalize_markdown source maps — any
+//! ambiguity skips the merge (fail-safe). Scoring errors drop the block; a
+//! dead channel degrades silently to heuristics-only.
 
-use std::time::{Duration, Instant};
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::{Duration, Instant, SystemTime};
+
+use memchr::memmem;
 
 use crate::config::Config;
+use crate::config::theme::Theme;
 use crate::emit::hold::{HOLD_CAP, HeldLine, Hold};
 use crate::emit::segment::{RunKind, Segmenter};
 use crate::emit::styler::Styler;
+use crate::map::locate::map_spans;
+use crate::map::normalize::normalize_markdown;
 use crate::proxy::io_loop::ChunkTransform;
+use crate::score::cache::ScoreCache;
 use crate::score::heuristic::HeuristicScorer;
+use crate::tail::discover;
+use crate::tail::reader::TailReader;
 use crate::term::caps::Caps;
 use crate::term::finalize::Finalizer;
 use crate::term::grid::ShadowGrid;
+use crate::term::repaint::RepaintEngine;
 use crate::term::telemetry::SgrState;
-use crate::types::{AbsRow, Finality};
+use crate::types::{AbsRow, ConvoContext, Finality, ScoreRequest, Scorer, SpanScore};
 
 const QUIET_GAP: Duration = Duration::from_millis(100);
+const REPAINT_MIN_INTERVAL: Duration = Duration::from_millis(100);
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(30);
+const RECENT_SCORED_CAP: usize = 8;
+const MERGE_MIN_NORM_LEN: usize = 3;
+pub const CLAUDE_GUTTERS: [&str; 3] = ["⏺ ", "│ ", "  "];
+
+pub struct ScoredBlock {
+    pub message_id: String,
+    pub block_index: usize,
+    pub clean: String,
+    pub spans: Arc<Vec<SpanScore>>,
+}
+
+pub enum SessionSource {
+    Discover { cwd: PathBuf, spawned_at: SystemTime },
+    Attached(TailReader),
+}
+
+pub fn spawn_side_channel(source: SessionSource, scorer: Box<dyn Scorer>) -> Receiver<ScoredBlock> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("salcc-score".into())
+        .spawn(move || side_channel_thread(source, scorer, tx));
+    if let Err(err) = spawned {
+        tracing::warn!(%err, "scoring thread failed to spawn; styling continues heuristics-only");
+    }
+    rx
+}
+
+fn side_channel_thread(source: SessionSource, scorer: Box<dyn Scorer>, tx: Sender<ScoredBlock>) {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            tracing::warn!(%err, "scoring runtime failed to build; styling continues heuristics-only");
+            return;
+        }
+    };
+    runtime.block_on(score_new_blocks(source, scorer, tx));
+    tracing::debug!("scoring side channel thread exited");
+}
+
+async fn score_new_blocks(source: SessionSource, scorer: Box<dyn Scorer>, tx: Sender<ScoredBlock>) {
+    let Some(reader) = resolve_reader(source).await else {
+        return;
+    };
+    let session_id = reader
+        .session_path()
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ctx = ConvoContext {
+        session_id,
+        ..ConvoContext::default()
+    };
+    let cache = ScoreCache::new();
+    let mut blocks_per_message: HashMap<String, usize> = HashMap::new();
+    let mut blocks = reader.spawn();
+    while let Some(block) = blocks.recv().await {
+        let seen = blocks_per_message.entry(block.message_id.clone()).or_insert(0);
+        let block_index = *seen;
+        *seen += 1;
+        let scored = cache
+            .get_or_score(&block.message_id, block_index, &block.block_text, || {
+                scorer.score(ScoreRequest {
+                    text: &block.block_text,
+                    ctx: &ctx,
+                })
+            })
+            .await;
+        match scored {
+            Ok((spans, cache_hit)) => {
+                tracing::debug!(
+                    message_id = %block.message_id,
+                    block_index,
+                    cache_hit,
+                    spans = spans.len(),
+                    "block scored"
+                );
+                let delivery = tx.send(ScoredBlock {
+                    message_id: block.message_id,
+                    block_index,
+                    clean: block.block_text,
+                    spans,
+                });
+                if delivery.is_err() {
+                    tracing::debug!("score receiver dropped; side channel exiting");
+                    return;
+                }
+            }
+            Err(err) => tracing::warn!(
+                %err,
+                message_id = %block.message_id,
+                block_index,
+                "block scoring failed; block dropped without retry"
+            ),
+        }
+    }
+}
+
+async fn resolve_reader(source: SessionSource) -> Option<TailReader> {
+    let (cwd, spawned_at) = match source {
+        SessionSource::Attached(reader) => return Some(reader),
+        SessionSource::Discover { cwd, spawned_at } => (cwd, spawned_at),
+    };
+    let watch = discover::watch_for_new_session(&cwd, spawned_at);
+    let session = match tokio::time::timeout(DISCOVER_TIMEOUT, watch).await {
+        Ok(path) => path,
+        Err(_) => match discover::discover_session(&cwd) {
+            Some(path) => {
+                tracing::debug!(?path, "no new session appeared; tailing most recent existing session");
+                path
+            }
+            None => {
+                tracing::warn!(?cwd, "no transcript session found; scoring side channel idle");
+                return None;
+            }
+        },
+    };
+    match TailReader::attach(session, Some(discover::project_dir(&cwd))) {
+        Ok(reader) => Some(reader),
+        Err(err) => {
+            tracing::warn!(%err, "transcript tail attach failed; scoring side channel idle");
+            None
+        }
+    }
+}
+
+struct RecentBlock {
+    norm: String,
+    norm_spans: Vec<SpanScore>,
+}
 
 pub struct StylingTransform {
     grid: ShadowGrid,
@@ -39,11 +201,16 @@ pub struct StylingTransform {
     styler: Styler,
     scorer: HeuristicScorer,
     caps: Caps,
+    theme: Theme,
     hold_ms: Duration,
     last_activity: Option<Instant>,
     burst_open: bool,
     line_sgr: SgrState,
     reverse_used: bool,
+    intake: Option<Receiver<ScoredBlock>>,
+    recent_scored: VecDeque<RecentBlock>,
+    engine: RepaintEngine,
+    last_repaint: Option<Instant>,
 }
 
 impl StylingTransform {
@@ -58,11 +225,123 @@ impl StylingTransform {
             styler: Styler::new(config.theme.clone(), caps, config.density_budget),
             scorer: HeuristicScorer::new(config),
             caps,
+            theme: config.theme.clone(),
             hold_ms: Duration::from_millis(config.hold_ms),
             last_activity: None,
             burst_open: false,
             line_sgr: SgrState::default(),
             reverse_used: false,
+            intake: None,
+            recent_scored: VecDeque::new(),
+            engine: RepaintEngine::new(),
+            last_repaint: None,
+        }
+    }
+
+    pub fn attach_score_channel(&mut self, intake: Receiver<ScoredBlock>) {
+        self.intake = Some(intake);
+    }
+
+    pub fn scored_block_count(&self) -> usize {
+        self.recent_scored.len()
+    }
+
+    pub fn repaint_pending_rows(&self) -> usize {
+        self.engine.pending_rows()
+    }
+
+    fn drain_intake(&mut self) {
+        let mut incoming = Vec::new();
+        let mut disconnected = false;
+        if let Some(intake) = &self.intake {
+            loop {
+                match intake.try_recv() {
+                    Ok(block) => incoming.push(block),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if disconnected {
+            tracing::debug!("score channel disconnected; continuing heuristics-only");
+            self.intake = None;
+        }
+        for block in incoming {
+            self.note_scored(block);
+        }
+    }
+
+    fn note_scored(&mut self, block: ScoredBlock) {
+        if block.spans.is_empty() {
+            tracing::debug!(
+                message_id = %block.message_id,
+                block_index = block.block_index,
+                "scored block has no spans; nothing to refine"
+            );
+            return;
+        }
+        let window = self.harvest_window();
+        let cell_spans = map_spans(&block.clean, &block.spans, &window, &CLAUDE_GUTTERS);
+        if !cell_spans.is_empty() {
+            self.engine.queue(&mut self.grid, cell_spans);
+        }
+        let (norm, map) = normalize_markdown(&block.clean);
+        let norm_spans = block
+            .spans
+            .iter()
+            .filter_map(|span| {
+                let range = project_norm_range(&map, span);
+                range.map(|range| SpanScore::new(range, span.facet.clone(), span.weight, span.source))
+            })
+            .collect();
+        self.recent_scored.push_back(RecentBlock { norm, norm_spans });
+        if self.recent_scored.len() > RECENT_SCORED_CAP {
+            self.recent_scored.pop_front();
+        }
+        tracing::debug!(
+            message_id = %block.message_id,
+            block_index = block.block_index,
+            spans = block.spans.len(),
+            rows_queued = self.engine.pending_rows(),
+            "scored block ingested for merge and repaint"
+        );
+    }
+
+    fn harvest_window(&mut self) -> Vec<(AbsRow, String)> {
+        let (rows, _) = self.grid.size();
+        let base = self.grid.scroll_base();
+        let start = base.saturating_sub(u64::from(rows));
+        let end = base + u64::from(rows);
+        (start..end)
+            .filter_map(|abs| {
+                let row = AbsRow(abs);
+                self.grid.row_text(row).map(|text| (row, text))
+            })
+            .collect()
+    }
+
+    fn maybe_repaint(&mut self, now: Instant, out: &mut Vec<u8>) {
+        if self.engine.pending_rows() == 0 || !self.hold.is_empty() {
+            return;
+        }
+        let child_quiet = self
+            .last_activity
+            .is_none_or(|last| now.duration_since(last) >= QUIET_GAP);
+        if !child_quiet {
+            return;
+        }
+        if self
+            .last_repaint
+            .is_some_and(|last| now.duration_since(last) < REPAINT_MIN_INTERVAL)
+        {
+            return;
+        }
+        if let Some(batch) = self.engine.build_batch(&mut self.grid, &self.fin, &self.caps, &self.theme) {
+            self.last_repaint = Some(now);
+            out.extend_from_slice(&batch);
         }
     }
 
@@ -132,7 +411,9 @@ impl StylingTransform {
         {
             let allow_reverse = !self.reverse_used;
             let styled = self.styler.style_line(&line.bytes, &line.sgr_before, allow_reverse, |clean| {
-                self.scorer.score_line(clean)
+                let mut spans = self.scorer.score_line(clean);
+                spans.extend(merge_cached_spans(&self.recent_scored, clean));
+                spans
             });
             if let Some(styled) = styled {
                 tracing::trace!(row = line.row.0, "line emitted styled");
@@ -164,12 +445,69 @@ impl StylingTransform {
     }
 }
 
+fn project_norm_range(map: &[usize], span: &SpanScore) -> Option<std::ops::Range<usize>> {
+    let start = map.partition_point(|&origin| origin < span.range.start);
+    let end = map.partition_point(|&origin| origin < span.range.end);
+    (start < end).then_some(start..end)
+}
+
+fn strip_gutter(line: &str) -> (usize, &str) {
+    for gutter in CLAUDE_GUTTERS {
+        if line.starts_with(gutter) {
+            return (gutter.len(), &line[gutter.len()..]);
+        }
+    }
+    (0, line)
+}
+
+fn merge_cached_spans(recent: &VecDeque<RecentBlock>, line_clean: &str) -> Vec<SpanScore> {
+    if recent.is_empty() {
+        return Vec::new();
+    }
+    let (gutter_len, body) = strip_gutter(line_clean);
+    let (line_norm, line_map) = normalize_markdown(body);
+    if line_norm.len() < MERGE_MIN_NORM_LEN {
+        return Vec::new();
+    }
+    let mut located: Option<(&RecentBlock, usize)> = None;
+    for block in recent {
+        let mut hits = memmem::find_iter(block.norm.as_bytes(), line_norm.as_bytes());
+        let Some(first) = hits.next() else {
+            continue;
+        };
+        if hits.next().is_some() || located.is_some() {
+            tracing::debug!(len = line_norm.len(), "emission merge skipped: line text ambiguous in scored blocks");
+            return Vec::new();
+        }
+        located = Some((block, first));
+    }
+    let Some((block, base)) = located else {
+        return Vec::new();
+    };
+    let window = base..base + line_norm.len();
+    let mut merged = Vec::new();
+    for span in &block.norm_spans {
+        let overlap = span.range.start.max(window.start)..span.range.end.min(window.end);
+        if overlap.start >= overlap.end {
+            continue;
+        }
+        let start = gutter_len + line_map[overlap.start - base];
+        let end = gutter_len + line_map[overlap.end - base - 1] + 1;
+        merged.push(SpanScore::new(start..end, span.facet.clone(), span.weight, span.source));
+    }
+    if !merged.is_empty() {
+        tracing::trace!(spans = merged.len(), "cached LLM spans merged into emission styling");
+    }
+    merged
+}
+
 impl ChunkTransform for StylingTransform {
     fn transform(&mut self, chunk: &[u8], out: &mut Vec<u8>) {
         if !self.caps.styling_enabled {
             out.extend_from_slice(chunk);
             return;
         }
+        self.drain_intake();
         let now = Instant::now();
         self.reverse_used = false;
         if self.burst_open
@@ -208,6 +546,7 @@ impl ChunkTransform for StylingTransform {
         if !self.caps.styling_enabled {
             return;
         }
+        self.drain_intake();
         let now = Instant::now();
         self.reverse_used = false;
         if self.burst_open
@@ -224,6 +563,7 @@ impl ChunkTransform for StylingTransform {
             out.extend_from_slice(&partial);
         }
         self.drain_ready(out);
+        self.maybe_repaint(now, out);
     }
 
     fn resize(&mut self, rows: u16, cols: u16, out: &mut Vec<u8>) {
@@ -232,6 +572,7 @@ impl ChunkTransform for StylingTransform {
         }
         self.reverse_used = false;
         self.flush_all(out);
+        self.engine = RepaintEngine::new();
         let rows = rows.max(1);
         let cols = cols.max(1);
         self.grid.resize(rows, cols);

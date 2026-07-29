@@ -9,7 +9,9 @@
 //! byte-perfect passthrough. EIO from the pty reader is normal child exit,
 //! not an error. Grandchildren holding the pty open keep the session alive
 //! until output EOF, matching script(1) semantics. The child exit code is
-//! returned for exact propagation by the caller.
+//! returned for exact propagation by the caller. `init_tracing` is public
+//! and idempotent so callers that construct transforms (and may need to log
+//! warnings) before `run` can bring the file-sink subscriber up early.
 
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Write};
@@ -196,7 +198,7 @@ fn write_all_fd(fd: BorrowedFd, buf: &[u8]) -> rustix::io::Result<()> {
     Ok(())
 }
 
-fn init_tracing() {
+pub fn init_tracing() {
     let preferred = dirs::state_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("salcc");

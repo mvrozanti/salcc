@@ -2,21 +2,28 @@
 //! words that cannot collide with wrapping (record/replay/stats/doctor).
 //! Transform selection: `--no-style`, `NO_COLOR`, a non-tty stdout, or an
 //! unknown terminal select the identity transform (bit-perfect passthrough);
-//! otherwise the styling pipeline runs. `record` tees raw child output into
-//! an asciinema cast v2 file while passing through untouched; `replay` runs
-//! a cast through the styling transform offline (cast gaps drive burst ends,
-//! verdicts settle at EOF) and writes the styled bytes to stdout — the demo
-//! and debugging tool for the emission channel.
+//! otherwise the styling pipeline runs, and when the configured scorer is
+//! "anthropic" the async scoring side channel is spawned before the child
+//! (SystemTime captured pre-spawn so session discovery can watch for the
+//! new transcript) and attached to the transform. A missing API key logs
+//! one warning and degrades to heuristics-only — never a crash, never a
+//! block. `record` tees raw child output into an asciinema cast v2 file
+//! while passing through untouched; `replay` runs a cast through the
+//! styling transform offline (cast gaps drive burst ends, verdicts settle
+//! at EOF) and writes the styled bytes to stdout — the demo and debugging
+//! tool for the emission channel.
 
 use std::io::Write;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use clap::{Parser, Subcommand};
 
 use crate::config::Config;
-use crate::emit::pipeline::StylingTransform;
+use crate::emit::pipeline::{SessionSource, StylingTransform, spawn_side_channel};
 use crate::proxy::io_loop::{self, ChunkTransform, IdentityTransform};
 use crate::proxy::pty;
+use crate::score::anthropic::AnthropicScorer;
+use crate::stats::metrics::MetricsLog;
 use crate::term::caps::Caps;
 
 #[derive(Parser, Debug)]
@@ -82,10 +89,37 @@ fn run_proxy(child: &[String], no_style: bool) -> anyhow::Result<i32> {
     if no_style || !caps.styling_enabled {
         return io_loop::run(child, &mut IdentityTransform);
     }
+    io_loop::init_tracing();
     let config = Config::load();
     let size = pty::real_terminal_size();
     let mut transform = StylingTransform::new(&config, caps, size.rows, size.cols);
+    if config.scorer.name == "anthropic" {
+        attach_anthropic_side_channel(&config, &mut transform);
+    }
     io_loop::run(child, &mut transform)
+}
+
+fn attach_anthropic_side_channel(config: &Config, transform: &mut StylingTransform) {
+    let metrics = MetricsLog::open_default();
+    let scorer = match AnthropicScorer::new(&config.scorer, config.dimensions.clone(), metrics) {
+        Ok(scorer) => scorer,
+        Err(err) => {
+            tracing::warn!(%err, "anthropic scorer unavailable; styling continues heuristics-only");
+            return;
+        }
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => {
+            tracing::warn!(%err, "cwd unavailable; scoring side channel disabled");
+            return;
+        }
+    };
+    let source = SessionSource::Discover {
+        cwd,
+        spawned_at: SystemTime::now(),
+    };
+    transform.attach_score_channel(spawn_side_channel(source, Box::new(scorer)));
 }
 
 fn run_record(output: &std::path::Path, child: &[String]) -> anyhow::Result<()> {
