@@ -84,7 +84,22 @@ pub fn run(argv: &[String], transform: &mut dyn ChunkTransform) -> Result<i32> {
     let status = child.wait().context("child wait failed")?;
     drop(master);
     tracing::info!(code = status.exit_code(), signal = ?status.signal(), "child exited");
-    Ok(i32::try_from(status.exit_code()).unwrap_or(1))
+    let code = match status.signal().and_then(signal_number_from_name) {
+        Some(signo) => 128 + signo,
+        None => i32::try_from(status.exit_code()).unwrap_or(1),
+    };
+    Ok(code)
+}
+
+fn signal_number_from_name(name: &str) -> Option<i32> {
+    if let Some(rest) = name.strip_prefix("Signal ") {
+        return rest.trim().parse().ok();
+    }
+    (1..=31).find(|&signo| {
+        let ptr = unsafe { libc::strsignal(signo) };
+        !ptr.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy() == name
+    })
 }
 
 fn spawn_stdin_pump(mut writer: Box<dyn Write + Send>) {

@@ -296,6 +296,28 @@ fn ambiguity_and_absence_drop_unique_fallback_maps() {
 }
 
 #[test]
+fn fallback_rejects_in_word_substring() {
+    let window = vec![(AbsRow(3), "we will concatenate the buffers".to_owned())];
+    let clean = "unrelated preamble so the whole message never anchors, but cat appears";
+    let spans = [SpanScore::new(find_range(clean, "cat"), Facet::Risk, 0.9, SourceId::Anthropic)];
+    let got = map_spans(clean, &spans, &window, &[]);
+    assert!(got.is_empty(), "span 'cat' must not style the interior of 'concatenate': {got:?}");
+}
+
+#[test]
+fn fallback_allows_wrap_seam_boundary() {
+    let window = vec![
+        (AbsRow(3), "please run the tests".to_owned()),
+        (AbsRow(4), "and report back".to_owned()),
+    ];
+    let clean = "earlier unrelated text that blocks anchoring, then run the tests appears";
+    let spans = [SpanScore::new(find_range(clean, "run the tests"), Facet::Command, 0.8, SourceId::Anthropic)];
+    let got = map_spans(clean, &spans, &window, &[]);
+    assert_eq!(got.len(), 1, "wrap-seam boundary must still map: {got:?}");
+    assert_eq!(got[0].row, AbsRow(3));
+}
+
+#[test]
 fn anchor_requires_unique_match() {
     assert_eq!(anchor("ab", "xxabyy"), Some(2));
     assert_eq!(anchor("ab", "abab"), None);
@@ -386,7 +408,7 @@ fn repaint_batch_targets_queued_rows_and_restores_cursor() {
             weight: 0.5,
         },
     ];
-    let mut engine = RepaintEngine::new();
+    let mut engine = RepaintEngine::new(0.12);
     engine.queue(&mut grid, spans.clone());
     let caps = Caps::truecolor_undercurl();
     let theme = Theme::default();
@@ -447,7 +469,7 @@ fn repaint_without_sync_update_omits_2026_and_empty_queue_is_none() {
         sync_update: false,
     };
     let theme = Theme::default();
-    let mut engine = RepaintEngine::new();
+    let mut engine = RepaintEngine::new(0.12);
     assert!(engine.build_batch(&mut grid, &fin, &caps, &theme).is_none());
     engine.queue(
         &mut grid,
@@ -469,7 +491,7 @@ fn repaint_glyph_swaps_two_space_pad_only() {
     let mut lines = plain_lines();
     lines[10] = "  padded step ready for glyph swap".to_owned();
     let (mut grid, fin, log) = session(&lines);
-    let mut engine = RepaintEngine::new();
+    let mut engine = RepaintEngine::new(0.12);
     engine.queue(
         &mut grid,
         vec![
@@ -521,7 +543,7 @@ fn repaint_glyph_swaps_two_space_pad_only() {
 #[test]
 fn repaint_skips_rewritten_and_scrolled_rows() {
     let (mut grid, mut fin, mut log) = session(&plain_lines());
-    let mut engine = RepaintEngine::new();
+    let mut engine = RepaintEngine::new(0.12);
     engine.queue(
         &mut grid,
         vec![CellSpan {
@@ -546,7 +568,7 @@ fn repaint_skips_rewritten_and_scrolled_rows() {
     );
 
     let (mut grid, mut fin, mut log) = session(&plain_lines());
-    let mut engine = RepaintEngine::new();
+    let mut engine = RepaintEngine::new(0.12);
     engine.queue(
         &mut grid,
         vec![CellSpan {

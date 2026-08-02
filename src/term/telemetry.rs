@@ -378,7 +378,9 @@ impl TelemetryState {
         let modes: Vec<u16> = params.iter().filter_map(|p| p.first().copied()).collect();
         for mode in modes {
             match (mode, set) {
-                (47, _) => self.set_alt_screen(set),
+                (47 | 1047, _) => self.set_alt_screen(set),
+                (1048, true) => self.save_cursor(),
+                (1048, false) => self.restore_cursor(),
                 (1049, true) => {
                     self.save_cursor();
                     self.alternate = GridModel::new(self.rows);

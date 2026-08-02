@@ -21,9 +21,9 @@
 //! to the emission channel) + SGR reset + EL(0) for the blank tail (skipped
 //! when content reaches the last column so EL cannot eat the final cell),
 //! then child live-SGR restore + CUP to the grid cursor + CSI ?25h (unless
-//! the child hid the cursor) + CSI ?2026l. The restoring CUP does not
-//! reproduce pending-wrap cursor state; repaint only runs above the child's
-//! dynamic region where that state is already consumed.
+//! the child hid the cursor) + CSI ?2026l. The restoring CUP cannot reproduce
+//! a pending-wrap (deferred-autowrap) cursor state, so `build_batch` defers
+//! the whole batch when the child cursor sits on the last column.
 //!
 //! Rate limiting is the caller's job: drive from the pipeline flush tick,
 //! child-quiet gated, at most one batch per 100ms (docs/architecture.md).
@@ -33,7 +33,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 
 use crate::config::theme::Theme;
-use crate::emit::styler::{facet_sgr_params, fg_params, gutter_glyph_slot};
+use crate::emit::styler::{facet_sgr_params, fg_params, gutter_glyph_slot, vt100_color_param};
 use crate::map::locate::CellSpan;
 use crate::term::caps::Caps;
 use crate::term::finalize::Finalizer;
@@ -54,18 +54,26 @@ struct RowOverlay {
     spans: Vec<OverlaySpan>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RepaintEngine {
     queued: BTreeMap<u64, RowOverlay>,
+    density_budget: f32,
 }
 
 impl RepaintEngine {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(density_budget: f32) -> Self {
+        Self {
+            queued: BTreeMap::new(),
+            density_budget,
+        }
     }
 
     pub fn pending_rows(&self) -> usize {
         self.queued.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.queued.clear();
     }
 
     pub fn queue(&mut self, grid: &mut ShadowGrid, spans: impl IntoIterator<Item = CellSpan>) {
@@ -104,10 +112,15 @@ impl RepaintEngine {
         caps: &Caps,
         theme: &Theme,
     ) -> Option<Vec<u8>> {
-        let queued = std::mem::take(&mut self.queued);
-        if queued.is_empty() || !caps.styling_enabled {
+        if self.queued.is_empty() || !caps.styling_enabled {
             return None;
         }
+        let (_, cols) = grid.screen().size();
+        if grid.cursor().1 + 1 >= cols {
+            tracing::debug!("repaint deferred: cursor at last column, pending-wrap state unrestorable");
+            return None;
+        }
+        let queued = std::mem::take(&mut self.queued);
         let mut eligible: Vec<(u16, String, RowOverlay)> = Vec::new();
         for (abs, overlay) in queued {
             let row = AbsRow(abs);
@@ -135,6 +148,9 @@ impl RepaintEngine {
         }
         if eligible.is_empty() {
             return None;
+        }
+        for (_, text, overlay) in &mut eligible {
+            enforce_density(&mut overlay.spans, text.chars().count(), self.density_budget);
         }
         let mut batch = Vec::new();
         if caps.sync_update {
@@ -249,8 +265,8 @@ fn cell_params(
             params.push(code.to_owned());
         }
     }
-    push_color(&mut params, cell.fgcolor(), false);
-    push_color(&mut params, cell.bgcolor(), true);
+    params.extend(vt100_color_param(cell.fgcolor(), false));
+    params.extend(vt100_color_param(cell.bgcolor(), true));
     if let Some(span) = span {
         params.extend(facet_sgr_params(
             theme,
@@ -264,14 +280,33 @@ fn cell_params(
     params
 }
 
-fn push_color(params: &mut Vec<String>, color: vt100::Color, background: bool) {
-    let (lo, hi, ext) = if background { (40, 100, 48) } else { (30, 90, 38) };
-    match color {
-        vt100::Color::Default => {}
-        vt100::Color::Idx(n) if n < 8 => params.push((lo + u16::from(n)).to_string()),
-        vt100::Color::Idx(n) if n < 16 => params.push((hi + u16::from(n) - 8).to_string()),
-        vt100::Color::Idx(n) => params.push(format!("{ext};5;{n}")),
-        vt100::Color::Rgb(r, g, b) => params.push(format!("{ext};2;{r};{g};{b}")),
+fn enforce_density(spans: &mut Vec<OverlaySpan>, visible_chars: usize, budget_frac: f32) {
+    let budget = budget_frac * visible_chars.max(1) as f32;
+    loop {
+        let emphasis: Vec<usize> = spans
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.facet.is_emphasis())
+            .map(|(i, _)| i)
+            .collect();
+        let emphasized: u32 = emphasis
+            .iter()
+            .map(|&i| u32::from(spans[i].cols.end.saturating_sub(spans[i].cols.start)))
+            .sum();
+        if emphasized as f32 <= budget || emphasis.len() <= 1 {
+            return;
+        }
+        let victim = emphasis
+            .iter()
+            .copied()
+            .filter(|&i| spans[i].facet != Facet::Risk)
+            .min_by(|&a, &b| spans[a].weight.total_cmp(&spans[b].weight));
+        match victim {
+            Some(i) => {
+                spans.remove(i);
+            }
+            None => return,
+        }
     }
 }
 

@@ -1737,6 +1737,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "insta",
+ "libc",
  "memchr",
  "portable-pty",
  "proptest",

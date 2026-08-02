@@ -292,6 +292,20 @@ pub fn fg_params(caps: &Caps, color: Rgb) -> String {
     }
 }
 
+/// Single source of truth for serializing a `vt100::Color` (a base grid cell's
+/// fg/bg) into an SGR parameter. Repaint's base-cell re-emission routes through
+/// here so the encoding lives in one place beside the overlay color helpers.
+pub fn vt100_color_param(color: vt100::Color, background: bool) -> Option<String> {
+    let (lo, hi, ext) = if background { (40, 100, 48) } else { (30, 90, 38) };
+    match color {
+        vt100::Color::Default => None,
+        vt100::Color::Idx(n) if n < 8 => Some((lo + u16::from(n)).to_string()),
+        vt100::Color::Idx(n) if n < 16 => Some((hi + u16::from(n) - 8).to_string()),
+        vt100::Color::Idx(n) => Some(format!("{ext};5;{n}")),
+        vt100::Color::Rgb(r, g, b) => Some(format!("{ext};2;{r};{g};{b}")),
+    }
+}
+
 fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }

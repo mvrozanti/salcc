@@ -42,7 +42,7 @@ pub fn map_spans(
     let anchored = anchor(&clean_norm, &grid_norm);
     let mut out = Vec::new();
     for span in spans {
-        match locate_span(span, &clean_norm, &md_map, &grid_norm, anchored) {
+        match locate_span(span, &clean_norm, &md_map, &grid_norm, &grid_map, anchored) {
             Some(range) => out.extend(cell_runs(&grid_norm, &grid_map, range, span)),
             None => tracing::debug!(
                 range = ?span.range,
@@ -61,6 +61,7 @@ fn locate_span(
     clean_norm: &str,
     md_map: &[usize],
     grid_norm: &str,
+    grid_map: &[CellRef],
     anchored: Option<usize>,
 ) -> Option<Range<usize>> {
     let norm = project_range(md_map, &span.range)?;
@@ -70,7 +71,7 @@ fn locate_span(
     if let Some(base) = anchored {
         return Some(base + norm.start..base + norm.end);
     }
-    unique_occurrence(&clean_norm[norm], grid_norm)
+    unique_occurrence(&clean_norm[norm], grid_norm, grid_map)
 }
 
 fn project_range(md_map: &[usize], range: &Range<usize>) -> Option<Range<usize>> {
@@ -79,16 +80,50 @@ fn project_range(md_map: &[usize], range: &Range<usize>) -> Option<Range<usize>>
     (start < end).then_some(start..end)
 }
 
-fn unique_occurrence(needle: &str, hay: &str) -> Option<Range<usize>> {
+fn unique_occurrence(needle: &str, hay: &str, map: &[CellRef]) -> Option<Range<usize>> {
     if needle.is_empty() {
         return None;
     }
-    let mut hits = memmem::find_iter(hay.as_bytes(), needle.as_bytes());
-    let first = hits.next()?;
-    if hits.next().is_some() {
-        return None;
+    let mut found = None;
+    for start in memmem::find_iter(hay.as_bytes(), needle.as_bytes()) {
+        if !word_bounded(hay, start, needle, map) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(start);
     }
-    Some(first..first + needle.len())
+    let start = found?;
+    Some(start..start + needle.len())
+}
+
+fn same_row(map: &[CellRef], a: usize, b: usize) -> bool {
+    match (map.get(a), map.get(b)) {
+        (Some(x), Some(y)) => x.row == y.row,
+        _ => false,
+    }
+}
+
+fn word_bounded(hay: &str, start: usize, needle: &str, map: &[CellRef]) -> bool {
+    let end = start + needle.len();
+    let left_ok = match hay[..start].chars().next_back() {
+        Some(prev) => {
+            !(prev.is_alphanumeric()
+                && needle.starts_with(|c: char| c.is_alphanumeric())
+                && same_row(map, start - prev.len_utf8(), start))
+        }
+        None => true,
+    };
+    let right_ok = match hay[end..].chars().next() {
+        Some(next) => {
+            !(next.is_alphanumeric()
+                && needle.ends_with(|c: char| c.is_alphanumeric())
+                && same_row(map, end - 1, end))
+        }
+        None => true,
+    };
+    left_ok && right_ok
 }
 
 fn cell_runs(

@@ -97,7 +97,7 @@ impl TailReader {
         let current_mtime = std::fs::metadata(&self.session_path)
             .and_then(|meta| meta.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        if newest_mtime > current_mtime {
+        if newest_mtime >= current_mtime {
             tracing::debug!(from = ?self.session_path, to = ?newest, "session rotated");
             self.session_path = newest;
             self.offset = 0;

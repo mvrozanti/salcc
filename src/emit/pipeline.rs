@@ -268,7 +268,7 @@ pub struct StylingTransform {
     last_activity: Option<Instant>,
     burst_open: bool,
     line_sgr: SgrState,
-    reverse_used: bool,
+    reverse_row: Option<AbsRow>,
     intake: Option<Receiver<ScoredBlock>>,
     recent_scored: VecDeque<RecentBlock>,
     engine: RepaintEngine,
@@ -294,10 +294,10 @@ impl StylingTransform {
             last_activity: None,
             burst_open: false,
             line_sgr: SgrState::default(),
-            reverse_used: false,
+            reverse_row: None,
             intake: None,
             recent_scored: VecDeque::new(),
-            engine: RepaintEngine::new(),
+            engine: RepaintEngine::new(config.density_budget),
             last_repaint: None,
             veto_policy: config.llm_can_veto.clone(),
             reload: None,
@@ -440,9 +440,15 @@ impl StylingTransform {
         if !self.caps.styling_enabled {
             return;
         }
-        self.reverse_used = false;
         self.end_burst();
         self.drain_ready(out);
+    }
+
+    fn reverse_available(&self) -> bool {
+        match self.reverse_row {
+            None => true,
+            Some(row) => self.grid.visible_row_of(row).is_none(),
+        }
     }
 
     fn end_burst(&mut self) {
@@ -503,7 +509,7 @@ impl StylingTransform {
         if verdict == Finality::ScrollbackBound
             && self.fin.is_still_valid(&self.grid, line.row, line.generation)
         {
-            let allow_reverse = !self.reverse_used;
+            let allow_reverse = self.reverse_available();
             let styled = self.styler.style_line(&line.bytes, &line.sgr_before, allow_reverse, |clean| {
                 let heuristic = self.scorer.score_line(clean);
                 let llm = merge_cached_spans(&self.recent_scored, clean);
@@ -511,7 +517,9 @@ impl StylingTransform {
             });
             if let Some(styled) = styled {
                 tracing::trace!(row = line.row.0, "line emitted styled");
-                self.reverse_used |= styled.used_reverse;
+                if styled.used_reverse {
+                    self.reverse_row = Some(line.row);
+                }
                 out.extend_from_slice(&styled.bytes);
                 return;
             }
@@ -603,7 +611,6 @@ impl ChunkTransform for StylingTransform {
         }
         self.drain_intake();
         let now = Instant::now();
-        self.reverse_used = false;
         if self.burst_open
             && self
                 .last_activity
@@ -643,7 +650,6 @@ impl ChunkTransform for StylingTransform {
         self.maybe_reload_config();
         self.drain_intake();
         let now = Instant::now();
-        self.reverse_used = false;
         if self.burst_open
             && self
                 .last_activity
@@ -665,9 +671,8 @@ impl ChunkTransform for StylingTransform {
         if !self.caps.styling_enabled {
             return;
         }
-        self.reverse_used = false;
         self.flush_all(out);
-        self.engine = RepaintEngine::new();
+        self.engine.clear();
         let rows = rows.max(1);
         let cols = cols.max(1);
         self.grid.resize(rows, cols);
@@ -679,7 +684,6 @@ impl ChunkTransform for StylingTransform {
             return;
         }
         self.drain_intake();
-        self.reverse_used = false;
         if self.burst_open {
             self.end_burst();
         }

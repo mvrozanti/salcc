@@ -80,11 +80,12 @@ impl MetricsLog {
     }
 
     pub fn read_all(&self) -> Vec<Record> {
-        let Ok(text) = std::fs::read_to_string(&self.path) else {
+        let Ok(bytes) = std::fs::read(&self.path) else {
             return Vec::new();
         };
-        text.lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
+        bytes
+            .split(|&b| b == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
             .collect()
     }
 }

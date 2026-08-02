@@ -137,7 +137,7 @@ impl ShadowGrid {
     }
 
     pub fn alt_screen_active(&self) -> bool {
-        self.parser.screen().alternate_screen()
+        self.parser.screen().alternate_screen() || self.telemetry.alt_screen_active()
     }
 
     pub fn screen(&self) -> &vt100::Screen {

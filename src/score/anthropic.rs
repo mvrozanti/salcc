@@ -143,6 +143,12 @@ pub fn usage_usd(usage: &Usage) -> f64 {
         / 1_000_000.0
 }
 
+fn estimate_call_cost(text: &str) -> f64 {
+    let est_input_tokens = (MARKING_PROMPT.len() + text.len()) as f64 / 3.0;
+    (est_input_tokens * INPUT_USD_PER_MTOK + f64::from(MAX_TOKENS) * OUTPUT_USD_PER_MTOK)
+        / 1_000_000.0
+}
+
 #[derive(Debug, Deserialize)]
 struct SpansPayload {
     #[serde(default)]
@@ -305,32 +311,53 @@ impl AnthropicScorer {
         *spent += usd;
     }
 
-    fn budget_exhausted(&self) -> bool {
-        if self.spent_usd() < self.max_session_usd {
+    fn try_reserve(&self, estimate: f64) -> bool {
+        let mut spent = self.spent_usd.lock().unwrap_or_else(|e| e.into_inner());
+        if *spent + estimate > self.max_session_usd {
+            drop(spent);
+            if !self.budget_stop_logged.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    max_session_usd = self.max_session_usd,
+                    spent_usd = self.spent_usd(),
+                    "session LLM budget would be exceeded; scoring disabled for remainder of session"
+                );
+            }
             return false;
         }
-        if !self.budget_stop_logged.swap(true, Ordering::Relaxed) {
-            tracing::warn!(
-                max_session_usd = self.max_session_usd,
-                spent_usd = self.spent_usd(),
-                "session LLM budget exhausted; scoring disabled for remainder of session"
-            );
-        }
+        *spent += estimate;
         true
+    }
+
+    fn reconcile(&self, estimate: f64, actual: f64) {
+        let mut spent = self.spent_usd.lock().unwrap_or_else(|e| e.into_inner());
+        *spent += actual - estimate;
     }
 
     async fn score_block(&self, req: ScoreRequest<'_>) -> anyhow::Result<Vec<SpanScore>> {
         if req.text.split_whitespace().count() < self.min_block_words {
             return Ok(Vec::new());
         }
-        if self.budget_exhausted() {
+        let estimate = estimate_call_cost(req.text);
+        if !self.try_reserve(estimate) {
             return Ok(Vec::new());
         }
         let body = build_request_body(&self.model, req.text, req.ctx, &self.dimensions);
-        let response = self.post_with_retry(&body).await?;
-        let (spans, usage) = parse_response(&response, req.text, &self.dimensions)?;
+        let response = match self.post_with_retry(&body).await {
+            Ok(response) => response,
+            Err(err) => {
+                self.reconcile(estimate, 0.0);
+                return Err(err);
+            }
+        };
+        let (spans, usage) = match parse_response(&response, req.text, &self.dimensions) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                self.reconcile(estimate, 0.0);
+                return Err(err);
+            }
+        };
         let usd = usage_usd(&usage);
-        self.note_spend(usd);
+        self.reconcile(estimate, usd);
         self.metrics.append(&Record {
             ts: Record::now_ms(),
             session: req.ctx.session_id.clone(),
