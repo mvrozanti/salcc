@@ -75,5 +75,6 @@ fn source_rank(source: SourceId) -> u8 {
         SourceId::Heuristic => 0,
         SourceId::Anthropic => 1,
         SourceId::Ollama => 2,
+        SourceId::SelfReport => 3,
     }
 }

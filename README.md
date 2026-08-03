@@ -47,15 +47,17 @@ gutter glyph so no meaning depends on color alone.
 
 ## Status
 
-**Working alpha.** Milestones M0–M4 are complete: transparent PTY
+**Working alpha.** Milestones M0–M6 are complete: transparent PTY
 passthrough, shadow-grid finalization, heuristic emission styling, async
 Haiku scoring with visible-region repaint, cascade merge with user-defined
-dimensions, and the cost metrics dashboard (`salcc stats --serve`) are all
-live and covered by the test suite (conformance fixtures, attrs-only
-styling checks, PTY integration). Deferred by decision: an Ollama/local
-scorer backend, codex/gemini transcript profiles, and the self-annotation
-mode (ADR 0005). Interfaces and the config schema may still change before
-0.2.
+dimensions, the cost metrics dashboard (`salcc stats --serve`), and the
+self-annotation scorer (now the default: the wrapped agent marks its own
+spans in a trailing annotation line that salcc parses and conceals — zero
+API calls, zero added latency; ADR 0005) are all live and covered by the
+test suite (conformance fixtures, attrs-only styling checks, PTY
+integration). Deferred by decision: an Ollama/local scorer backend and
+codex/gemini transcript profiles. Interfaces and the config schema may
+still change before 0.2.
 
 ## Quickstart
 
@@ -90,8 +92,10 @@ it owns your terminal).
 
 ```yaml
 scorer:
-  name: anthropic            # anthropic | heuristic
-  model: claude-haiku-4-5
+  name: self                 # self (default) | anthropic | heuristic
+  inject_instruction: true   # self: pass the annotation instruction to the
+                             # child via --append-system-prompt when supported
+  model: claude-haiku-4-5    # anthropic only
   api_key_env: ANTHROPIC_API_KEY
   max_session_usd: 0.50      # hard stop when exceeded
   min_block_words: 20        # shorter blocks are never sent to the LLM
@@ -116,7 +120,10 @@ llm_can_veto:                # which heuristic facets a zero-weight LLM
 
 ## Cost transparency
 
-The default scorer sends completed response blocks to `claude-haiku-4-5`
+The default scorer (`self`) costs nothing: the wrapped agent annotates its
+own output in a trailing machine-consumed line that salcc parses and
+conceals on screen — no API calls, no added latency. The opt-in
+`anthropic` scorer sends completed response blocks to `claude-haiku-4-5`
 (~$0.002 per scored response at current pricing; short blocks are skipped
 and nearby blocks coalesce). Because a tool that quietly spends your API
 key is obnoxious, every call is metered:

@@ -4,11 +4,16 @@
 //! Transform selection: `--no-style`, `NO_COLOR`, a non-tty stdout, or an
 //! unknown terminal select the identity transform (bit-perfect passthrough);
 //! otherwise the styling pipeline runs, and when the configured scorer is
-//! "anthropic" the async scoring side channel is spawned before the child
-//! (SystemTime captured pre-spawn so session discovery can watch for the
-//! new transcript) and attached to the transform. A missing API key logs
-//! one warning and degrades to heuristics-only — never a crash, never a
-//! block. `record` tees raw child output into an asciinema cast v2 file
+//! "self" (default) or "anthropic" the async scoring side channel is
+//! spawned before the child (SystemTime captured pre-spawn so session
+//! discovery can watch for the new transcript) and attached to the
+//! transform. A missing API key logs one warning and degrades to
+//! heuristics-only — never a crash, never a block. For scorer "self" with
+//! `scorer.inject_instruction` (default true) and a child whose basename is
+//! "claude", a one-shot `--help` probe (2s budget, SIGKILL on timeout)
+//! checks for `--append-system-prompt`; if advertised, the self-annotation
+//! instruction is appended to the child argv, otherwise a warning logs and
+//! doctor explains the manual setup. `record` tees raw child output into an asciinema cast v2 file
 //! while passing through untouched; `replay` runs a cast through the
 //! styling transform offline (cast gaps drive burst ends, verdicts settle
 //! at EOF) and writes the styled bytes to stdout — the demo and debugging
@@ -23,7 +28,7 @@
 //! Both own the terminal — no child — so printing to stdout is correct.
 
 use std::io::Write;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use clap::{Parser, Subcommand};
 
@@ -33,6 +38,7 @@ use crate::proxy::io_loop::{self, ChunkTransform, IdentityTransform};
 use crate::proxy::pty;
 use crate::proxy::signals;
 use crate::score::anthropic::AnthropicScorer;
+use crate::score::self_report::{SELF_ANNOTATION_INSTRUCTION, SelfScorer};
 use crate::stats::metrics::MetricsLog;
 use crate::stats::server;
 use crate::term::caps::Caps;
@@ -118,25 +124,31 @@ fn run_proxy(child: &[String], no_style: bool) -> anyhow::Result<i32> {
     let size = pty::real_terminal_size();
     let mut transform = StylingTransform::new(&config, caps, size.rows, size.cols);
     transform.watch_reload_flag(signals::register_reload_flag());
-    if config.scorer.name == "anthropic" {
-        attach_anthropic_side_channel(&config, &mut transform);
+    if matches!(config.scorer.name.as_str(), "self" | "anthropic") {
+        attach_score_side_channel(&config, &mut transform);
     }
-    io_loop::run(child, &mut transform)
+    let child = maybe_inject_instruction(&config, child);
+    io_loop::run(&child, &mut transform)
 }
 
-fn attach_anthropic_side_channel(config: &Config, transform: &mut StylingTransform) {
-    let metrics = MetricsLog::open_default();
-    let cache_log = CacheHitLog {
-        metrics: metrics.clone(),
-        model: config.scorer.model.clone(),
-    };
-    let scorer = match AnthropicScorer::new(&config.scorer, config.dimensions.clone(), metrics) {
-        Ok(scorer) => scorer,
-        Err(err) => {
-            tracing::warn!(%err, "anthropic scorer unavailable; styling continues heuristics-only");
-            return;
-        }
-    };
+fn attach_score_side_channel(config: &Config, transform: &mut StylingTransform) {
+    let (scorer, cache_log): (Box<dyn crate::types::Scorer>, Option<CacheHitLog>) =
+        if config.scorer.name == "self" {
+            (Box::new(SelfScorer::new(config.dimensions.clone())), None)
+        } else {
+            let metrics = MetricsLog::open_default();
+            let cache_log = CacheHitLog {
+                metrics: metrics.clone(),
+                model: config.scorer.model.clone(),
+            };
+            match AnthropicScorer::new(&config.scorer, config.dimensions.clone(), metrics) {
+                Ok(scorer) => (Box::new(scorer), Some(cache_log)),
+                Err(err) => {
+                    tracing::warn!(%err, "anthropic scorer unavailable; styling continues heuristics-only");
+                    return;
+                }
+            }
+        };
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(err) => {
@@ -148,7 +160,72 @@ fn attach_anthropic_side_channel(config: &Config, transform: &mut StylingTransfo
         cwd,
         spawned_at: SystemTime::now(),
     };
-    transform.attach_score_channel(spawn_side_channel(source, Box::new(scorer), Some(cache_log)));
+    transform.attach_score_channel(spawn_side_channel(source, scorer, cache_log));
+}
+
+const INJECTION_FLAG: &str = "--append-system-prompt";
+const HELP_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+fn maybe_inject_instruction(config: &Config, child: &[String]) -> Vec<String> {
+    let mut argv = child.to_vec();
+    if config.scorer.name != "self" || !config.scorer.inject_instruction {
+        return argv;
+    }
+    let Some(argv0) = child.first() else {
+        return argv;
+    };
+    let basename = std::path::Path::new(argv0)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if basename != "claude" {
+        tracing::debug!(%basename, "self-annotation instruction not injected: child is not claude");
+        return argv;
+    }
+    if !help_mentions_flag(argv0) {
+        tracing::warn!(
+            %argv0,
+            "child --help does not advertise {INJECTION_FLAG}; self-annotation instruction not injected — add it to the agent's system prompt manually (see salcc doctor)"
+        );
+        return argv;
+    }
+    argv.push(INJECTION_FLAG.to_string());
+    argv.push(SELF_ANNOTATION_INSTRUCTION.to_string());
+    tracing::info!("self-annotation instruction injected via {INJECTION_FLAG}");
+    argv
+}
+
+fn help_mentions_flag(argv0: &str) -> bool {
+    let spawned = std::process::Command::new(argv0)
+        .arg("--help")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let child = match spawned {
+        Ok(child) => child,
+        Err(err) => {
+            tracing::warn!(%err, %argv0, "help probe failed to spawn");
+            return false;
+        }
+    };
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(child.wait_with_output()).ok();
+    });
+    match rx.recv_timeout(HELP_PROBE_TIMEOUT) {
+        Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout).contains(INJECTION_FLAG),
+        Ok(Err(err)) => {
+            tracing::warn!(%err, "help probe failed to run");
+            false
+        }
+        Err(_) => {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            tracing::warn!(timeout = ?HELP_PROBE_TIMEOUT, "help probe timed out; killed");
+            false
+        }
+    }
 }
 
 fn run_stats(serve: bool, port: u16) -> anyhow::Result<()> {

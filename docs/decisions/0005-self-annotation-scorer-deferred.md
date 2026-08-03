@@ -1,6 +1,19 @@
 # ADR 0005: Self-annotation scorer — accepted as future mode, not default
 
-Status: accepted (deferred implementation)
+Status: superseded — implemented as the DEFAULT scorer by user decision
+(2026-08-02, milestone M6). The original blockers were resolved or accepted:
+the width-invariant concern (reason 4 below) is void because the annotation
+line is never stripped — it is concealed on screen via attrs only (SGR 8 +
+SGR 2, emission-time, `emit/styler.rs`), so text and width are untouched
+and no second audited exception exists. Marker leakage (reason 2) is
+accepted as the cost of zero-latency zero-cost scoring: markers persist in
+the transcript but render concealed under salcc and merely odd without it.
+Self-assessment bias and compliance drift (reasons 1, 3) are accepted
+trade-offs; the independent Haiku judge remains available as
+`scorer: anthropic`. Implementation: `src/score/self_report.rs`
+(`SourceId::SelfReport`, fixed per-facet weights, cross-block quote
+resolution in `emit/pipeline.rs`), instruction injected via
+`--append-system-prompt` when the child advertises it (`src/cli.rs`).
 
 ## Context
 

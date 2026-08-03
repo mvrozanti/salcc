@@ -19,7 +19,7 @@ UNCERTAINTY (dim/undercurl), plus DIM for boilerplate.
 | `src/proxy/` | PTY spawn + passthrough hot path (io_loop = every byte flows here) |
 | `src/term/` | Shadow vt100 grid, vte telemetry, **finalize.rs = correctness linchpin**, visible-region repaint, capability detection, `salcc doctor` |
 | `src/emit/` | TEXT/CTRL segmentation, hold buffer, emission-time styler (SGR merge, density budget) |
-| `src/score/` | Scorer trait impls: heuristic (instant), anthropic (Haiku, default), cascade merge, cache |
+| `src/score/` | Scorer trait impls: self_report (agent self-annotation, default), heuristic (instant), anthropic (Haiku, opt-in), cascade merge, cache |
 | `src/map/` | Clean-text span → grid cell mapping (normalize, anchor, quote locate) |
 | `src/tail/` | Claude Code transcript JSONL tail (clean text side channel) |
 | `src/config/` | YAML config, theme, user-defined dimensions |

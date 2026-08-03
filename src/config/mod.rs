@@ -1,6 +1,8 @@
 //! Configuration: ~/.config/salcc/config.yaml (XDG), reloaded on SIGHUP.
 //!
-//! Covers scorer selection (default: anthropic/claude-haiku-4-5), hold_ms,
+//! Covers scorer selection (default: self — the zero-cost self-annotation
+//! scorer with instruction injection toggled by scorer.inject_instruction;
+//! anthropic/claude-haiku-4-5 is the opt-in LLM judge), hold_ms,
 //! density_budget, per-facet toggles, theme overrides (Okabe-Ito defaults),
 //! user-defined semantic dimensions (keywords -> aho-corasick rules + llm_hint
 //! injected into the LLM prompt), llm_can_veto (per-facet map deciding which
@@ -95,17 +97,19 @@ pub struct ScorerConfig {
     pub api_key_cmd: Option<String>,
     pub max_session_usd: f64,
     pub min_block_words: usize,
+    pub inject_instruction: bool,
 }
 
 impl Default for ScorerConfig {
     fn default() -> Self {
         Self {
-            name: "anthropic".to_string(),
+            name: "self".to_string(),
             model: "claude-haiku-4-5".to_string(),
             api_key_env: "ANTHROPIC_API_KEY".to_string(),
             api_key_cmd: None,
             max_session_usd: 1.0,
             min_block_words: 20,
+            inject_instruction: true,
         }
     }
 }
@@ -210,6 +214,9 @@ impl Config {
                 if let Some(min_block_words) = table.min_block_words {
                     scorer.min_block_words = min_block_words;
                 }
+                if let Some(inject_instruction) = table.inject_instruction {
+                    scorer.inject_instruction = inject_instruction;
+                }
             }
             None => {}
         }
@@ -296,6 +303,7 @@ struct RawScorerConfig {
     api_key_cmd: Option<String>,
     max_session_usd: Option<f64>,
     min_block_words: Option<usize>,
+    inject_instruction: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]

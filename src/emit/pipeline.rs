@@ -20,7 +20,14 @@
 //! session transcript (watch-for-new with a 30s timeout, falling back to the
 //! most recent existing session), tails it, scores each new text block
 //! through the injected `Scorer` behind the dedupe cache, and delivers
-//! `ScoredBlock`s over a std mpsc channel. The transform drains that channel
+//! `ScoredBlock`s over a std mpsc channel. When the scorer is "self" the
+//! generic per-block path is bypassed: blocks accumulate per message id
+//! (most recent 4 messages) and each block's `⟦code:quote⟧` annotations
+//! resolve against the current block's blanked text first, then earlier
+//! blocks of the same message most-recent-first; a ScoredBlock is emitted
+//! per block that contained a quote, with ranges into that block's clean
+//! text, so the existing mapping/merge machinery applies unchanged. The
+//! dedupe cache is skipped in self mode — there is no API call to save. The transform drains that channel
 //! non-blockingly (try_recv) at the top of `transform`/`flush` — it never
 //! awaits. Each scored block is consumed twice: (1) spans are mapped onto
 //! the current grid window and queued on the RepaintEngine, whose batches
@@ -65,8 +72,10 @@ use crate::score::anthropic::block_id;
 use crate::score::cache::ScoreCache;
 use crate::score::cascade;
 use crate::score::heuristic::HeuristicScorer;
+use crate::score::self_report;
 use crate::stats::metrics::{MetricsLog, Record};
 use crate::tail::discover;
+use crate::tail::model::TextBlock;
 use crate::tail::reader::TailReader;
 use crate::term::caps::Caps;
 use crate::term::finalize::Finalizer;
@@ -79,6 +88,7 @@ const QUIET_GAP: Duration = Duration::from_millis(100);
 const REPAINT_MIN_INTERVAL: Duration = Duration::from_millis(100);
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(30);
 const RECENT_SCORED_CAP: usize = 8;
+const SELF_MESSAGE_CAP: usize = 4;
 const MERGE_MIN_NORM_LEN: usize = 3;
 const CTX_SUMMARY_CAP: usize = 4;
 const CTX_SUMMARY_CHARS: usize = 96;
@@ -151,10 +161,21 @@ async fn score_new_blocks(
         session_id,
         ..ConvoContext::default()
     };
+    let self_mode = scorer.name() == "self";
+    let mut self_messages: VecDeque<SelfMessage> = VecDeque::new();
     let cache = ScoreCache::new();
     let mut blocks_per_message: HashMap<String, usize> = HashMap::new();
     let mut blocks = reader.spawn();
     while let Some(block) = blocks.recv().await {
+        if self_mode {
+            for scored in ingest_self_block(&mut self_messages, &block) {
+                if tx.send(scored).is_err() {
+                    tracing::debug!("score receiver dropped; side channel exiting");
+                    return;
+                }
+            }
+            continue;
+        }
         let seen = blocks_per_message.entry(block.message_id.clone()).or_insert(0);
         let block_index = *seen;
         *seen += 1;
@@ -208,6 +229,60 @@ async fn score_new_blocks(
             ),
         }
     }
+}
+
+struct SelfMessage {
+    id: String,
+    blanked: Vec<String>,
+    original: Vec<String>,
+}
+
+fn ingest_self_block(messages: &mut VecDeque<SelfMessage>, block: &TextBlock) -> Vec<ScoredBlock> {
+    let (blanked, entries) = self_report::extract_annotations(&block.block_text);
+    let position = messages.iter().position(|m| m.id == block.message_id);
+    let msg_idx = match position {
+        Some(idx) => idx,
+        None => {
+            messages.push_back(SelfMessage {
+                id: block.message_id.clone(),
+                blanked: Vec::new(),
+                original: Vec::new(),
+            });
+            if messages.len() > SELF_MESSAGE_CAP {
+                messages.pop_front();
+            }
+            messages.len() - 1
+        }
+    };
+    let msg = &mut messages[msg_idx];
+    msg.blanked.push(blanked);
+    msg.original.push(block.block_text.clone());
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let mut spans_by_block: HashMap<usize, Vec<SpanScore>> = HashMap::new();
+    for (block_idx, span) in self_report::resolve_against_message(&msg.blanked, &entries) {
+        spans_by_block.entry(block_idx).or_default().push(span);
+    }
+    let mut scored: Vec<ScoredBlock> = spans_by_block
+        .into_iter()
+        .map(|(block_idx, spans)| ScoredBlock {
+            message_id: msg.id.clone(),
+            block_index: block_idx,
+            clean: msg.original[block_idx].clone(),
+            spans: Arc::new(spans),
+        })
+        .collect();
+    scored.sort_by_key(|b| b.block_index);
+    for block in &scored {
+        tracing::debug!(
+            message_id = %block.message_id,
+            block_index = block.block_index,
+            spans = block.spans.len(),
+            "self-annotation spans resolved"
+        );
+    }
+    scored
 }
 
 fn note_block_summary(ctx: &mut ConvoContext, block_text: &str) {
@@ -563,7 +638,7 @@ fn strip_gutter(line: &str) -> (usize, &str) {
 }
 
 fn merge_cached_spans(recent: &VecDeque<RecentBlock>, line_clean: &str) -> Vec<SpanScore> {
-    if recent.is_empty() {
+    if recent.is_empty() || self_report::is_annotation_line(line_clean) {
         return Vec::new();
     }
     let (gutter_len, body) = strip_gutter(line_clean);

@@ -19,6 +19,12 @@
 //! - Every styled region exits by restoring the child's exact SGR state, so
 //!   the line always ends in the child's live attributes.
 //!
+//! A line that is entirely one `⟦...⟧` self-annotation (after whitespace
+//! trim) short-circuits normal span styling and is wrapped in SGR 8
+//! (conceal) + SGR 2 (dim, the graceful floor for terminals without
+//! conceal), re-asserted after every child SGR event and closed with the
+//! child's restore sequence — attrs only, text and width untouched.
+//!
 //! Any line the extractor cannot model losslessly (interior CR, stray
 //! control bytes, invalid UTF-8) is refused: `None` means emit raw.
 //!
@@ -30,9 +36,12 @@
 use std::ops::Range;
 
 use crate::config::theme::{Rgb, Theme};
+use crate::score::self_report::is_annotation_line;
 use crate::term::caps::{Caps, ColorDepth};
 use crate::term::telemetry::SgrState;
 use crate::types::{Facet, SpanScore};
+
+pub const CONCEAL_DIM_SGR: &[u8] = b"\x1b[8;2m";
 
 pub struct Styler {
     theme: Theme,
@@ -79,6 +88,9 @@ impl Styler {
         let extract = extract(raw)?;
         if extract.clean.trim().is_empty() {
             return None;
+        }
+        if is_annotation_line(&extract.clean) {
+            return Some(self.render_concealed(&extract, sgr_before));
         }
         let mut spans = self.usable_spans(score(&extract.clean), &extract.clean);
         self.enforce_density(&mut spans, &extract.clean);
@@ -204,6 +216,31 @@ impl Styler {
         StyledLine {
             bytes: out,
             used_reverse,
+        }
+    }
+
+    fn render_concealed(&self, extract: &Extract, sgr_before: &SgrState) -> StyledLine {
+        let clean = extract.clean.as_bytes();
+        let mut out = Vec::with_capacity(clean.len() + 16);
+        let mut state = sgr_before.clone();
+        let mut event_idx = 0;
+        out.extend_from_slice(CONCEAL_DIM_SGR);
+        for ofs in 0..=clean.len() {
+            while let Some(event) = extract.events.get(event_idx).filter(|e| e.clean_ofs == ofs) {
+                out.extend_from_slice(&event.raw);
+                apply_sgr_params(&mut state, &event.raw[event.params_start..event.raw.len() - 1]);
+                out.extend_from_slice(CONCEAL_DIM_SGR);
+                event_idx += 1;
+            }
+            if ofs < clean.len() {
+                out.push(clean[ofs]);
+            }
+        }
+        out.extend_from_slice(&state.restore_sequence());
+        out.extend_from_slice(&extract.terminator);
+        StyledLine {
+            bytes: out,
+            used_reverse: false,
         }
     }
 

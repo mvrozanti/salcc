@@ -7,6 +7,9 @@
 //!   rendered/wrapped terminal output. The map/ module owns the translation.
 //! - `weight` is always clamped to 0.0..=1.0 at construction.
 //! - `Facet::Dim` is de-emphasis: it never counts against the density budget.
+//! - `SourceId::SelfReport` marks spans parsed from the wrapped agent's own
+//!   `⟦code:quote⟧` trailing annotations (score/self_report.rs) — they ride
+//!   the same async side channel as LLM spans but cost nothing.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -37,6 +40,7 @@ pub enum SourceId {
     Heuristic,
     Anthropic,
     Ollama,
+    SelfReport,
 }
 
 #[derive(Debug, Clone)]

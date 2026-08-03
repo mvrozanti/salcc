@@ -4,7 +4,12 @@
 //!   precision annotation; rules below 0.85 estimated precision must be
 //!   dim-only or disabled by default (reliability floor: below ~0.70,
 //!   highlighting is worse than nothing — Wickens & Dixon 2007).
-//! - anthropic: default async scorer, claude-haiku-4-5, structured output,
+//! - self_report: default scorer. The wrapped agent marks its own spans in a
+//!   trailing `⟦code:quote⟧` line (instruction injected via
+//!   --append-system-prompt); parsing is instant, zero API cost, quotes are
+//!   verbatim like the LLM path. The on-screen annotation line is concealed
+//!   (SGR 8+2), never removed.
+//! - anthropic: opt-in async scorer, claude-haiku-4-5, structured output,
 //!   spans as verbatim quotes (never offsets — models hallucinate offsets).
 //!   Sparse marking by prompt: precision over recall, empty list is valid.
 //! - cascade: merges heuristic + LLM spans. Max weight per facet per
@@ -20,3 +25,4 @@ pub mod anthropic;
 pub mod cache;
 pub mod cascade;
 pub mod heuristic;
+pub mod self_report;

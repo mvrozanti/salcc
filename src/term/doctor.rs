@@ -3,9 +3,11 @@
 //! plus the derived Caps, using the exact same detect path as the live
 //! proxy), config file path + parse status (parse errors surface verbatim
 //! here — this is where users debug their YAML; the proxy itself only logs
-//! and falls back to defaults), scorer identity + API key resolution status
-//! (env var presence, cmd configured, live resolution outcome — the key
-//! itself is never printed), transcript discovery for the current cwd
+//! and falls back to defaults), scorer identity (for "self": whether the
+//! launch-time instruction injection is enabled plus the manual-setup hint;
+//! for "anthropic": API key resolution status — env var presence, cmd
+//! configured, live resolution outcome, the key itself is never printed),
+//! transcript discovery for the current cwd
 //! (project dir, newest session file or none), and the metrics log location
 //! and record count. `--verify` additionally spawns `salcc cat` on a temp
 //! file inside a real PTY (same rig as tests/proxy_integration.rs) and
@@ -122,37 +124,39 @@ fn render_config(out: &mut String) {
     );
     line(out, "status", status);
     line(out, "scorer", &config.scorer.name);
-    line(out, "model", &config.scorer.model);
-    let env_set = std::env::var_os(&config.scorer.api_key_env).is_some();
-    line(
-        out,
-        "api key env",
-        format!(
-            "{} ({})",
-            config.scorer.api_key_env,
-            if env_set { "set" } else { "not set" }
-        ),
-    );
-    line(
-        out,
-        "api key cmd",
-        match &config.scorer.api_key_cmd {
-            Some(cmd) => format!("configured: {cmd}"),
-            None => "(not configured)".to_string(),
-        },
-    );
-    if config.scorer.name == "anthropic" {
+    if config.scorer.name == "self" {
+        let injection = if config.scorer.inject_instruction {
+            "enabled (--append-system-prompt injected at launch when supported; \
+             add the self-annotation instruction to your agent's system prompt otherwise)"
+        } else {
+            "disabled (add the self-annotation instruction to your agent's system prompt manually)"
+        };
+        line(out, "injection", injection);
+    } else if config.scorer.name == "anthropic" {
+        line(out, "model", &config.scorer.model);
+        let env_set = std::env::var_os(&config.scorer.api_key_env).is_some();
+        line(
+            out,
+            "api key env",
+            format!(
+                "{} ({})",
+                config.scorer.api_key_env,
+                if env_set { "set" } else { "not set" }
+            ),
+        );
+        line(
+            out,
+            "api key cmd",
+            match &config.scorer.api_key_cmd {
+                Some(cmd) => format!("configured: {cmd}"),
+                None => "(not configured)".to_string(),
+            },
+        );
         let resolution = match resolve_api_key(&config.scorer) {
             Ok(_) => "ok".to_string(),
             Err(err) => format!("unresolved: {err} (styling degrades to heuristics-only)"),
         };
         line(out, "key resolution", resolution);
-    } else {
-        line(
-            out,
-            "key resolution",
-            format!("n/a (scorer '{}')", config.scorer.name),
-        );
     }
     let _ = writeln!(out);
 }

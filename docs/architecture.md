@@ -15,7 +15,12 @@ child output ──► vt100 shadow grid + vte telemetry (cursor/scroll/SGR even
              ──► segmenter (TEXT runs vs CTRL runs) ──► hold buffer (≤150ms, line-atomic)
              ──► emission styler (heuristics NOW + merged LLM spans) ──► real tty
 side channel (own thread, current-thread tokio runtime):
-  transcript JSONL tail ──► score cache ──► anthropic scorer (async)
+  transcript JSONL tail ──► scorer:
+    self (default): parse trailing ⟦code:quote⟧ annotations, resolve quotes
+      against the message's blocks (current first, then earlier, last 4
+      messages) — zero API calls; the on-screen annotation line is
+      concealed at emission (SGR 8+2, attrs-only, never removed)
+    anthropic (opt-in): score cache ──► Haiku scorer (async)
              ──► std mpsc ──► transform drains via try_recv (never awaits)
              ──► (a) span→grid mapper ──► repaint queue ──► visible-region
                   repaint batch (flush tick; hold drained ∧ child-quiet
@@ -87,9 +92,15 @@ blocks gets the overlapping spans projected onto it at emission through
 the shared `normalize_markdown` source maps; any ambiguity skips the
 merge. Repaint bytes are appended from the flush tick only after the
 hold has fully drained, never interleaved inside a held line. `salcc
-claude` wires this up when the configured scorer is `anthropic`
-(`cli.rs`, SystemTime captured before child spawn for discovery); a
-missing API key logs one warning and runs heuristics-only.
+claude` wires this up when the configured scorer is `self` (default) or
+`anthropic` (`cli.rs`, SystemTime captured before child spawn for
+discovery); a missing API key logs one warning and runs heuristics-only.
+For `self`, cli.rs additionally probes the child's `--help` (basename
+"claude", 2s budget) and appends `--append-system-prompt` plus the
+annotation instruction when the flag is advertised; the side channel
+bypasses the dedupe cache (nothing to save) and resolves each block's
+`⟦code:quote⟧` entries against the accumulated blocks of the same
+message, emitting a ScoredBlock per block that contained a quote.
 
 The repaint channel must never touch Claude Code's active repaint region:
 rows at or below the dynamic-region top (the minimum cursor row of the last

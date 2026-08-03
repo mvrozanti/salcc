@@ -5,7 +5,9 @@
 //! facets. RISK targets near-1.0 recall on destructive-command shapes and is
 //! never dropped by downstream budgets. Sparse by design: at most
 //! MAX_SPANS_PER_LINE spans survive per line, highest weight first.
-//! NOVELTY needs session entity state and stays off until M3. Implements
+//! NOVELTY needs session entity state and stays off until M3. Lines that
+//! are entirely a `⟦...⟧` self-annotation are never scored as content —
+//! they belong to the conceal path in emit/styler.rs. Implements
 //! the async `Scorer` trait by wrapping the synchronous `score_line`.
 
 use std::sync::LazyLock;
@@ -131,6 +133,9 @@ impl HeuristicScorer {
     }
 
     pub fn score_line(&self, clean: &str) -> Vec<SpanScore> {
+        if crate::score::self_report::is_annotation_line(clean) {
+            return Vec::new();
+        }
         let mut spans = Vec::new();
         if self.toggles.risk {
             risk_spans(clean, &mut spans);

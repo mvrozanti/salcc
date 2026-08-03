@@ -405,12 +405,13 @@ async fn cache_does_not_cache_errors() {
 fn config_scorer_section_parses_and_defaults() {
     let default = Config::default();
     assert_eq!(default.scorer, ScorerConfig::default());
-    assert_eq!(default.scorer.name, "anthropic");
+    assert_eq!(default.scorer.name, "self");
     assert_eq!(default.scorer.model, "claude-haiku-4-5");
     assert_eq!(default.scorer.api_key_env, "ANTHROPIC_API_KEY");
     assert_eq!(default.scorer.api_key_cmd, None);
     assert_eq!(default.scorer.max_session_usd, 1.0);
     assert_eq!(default.scorer.min_block_words, 20);
+    assert!(default.scorer.inject_instruction);
 
     let named = Config::from_yaml("scorer: ollama\n").unwrap();
     assert_eq!(named.scorer.name, "ollama");
@@ -420,7 +421,7 @@ fn config_scorer_section_parses_and_defaults() {
         "scorer:\n  api_key_cmd: pass show anthropic\n  max_session_usd: 0.5\n  min_block_words: 10\n",
     )
     .unwrap();
-    assert_eq!(table.scorer.name, "anthropic");
+    assert_eq!(table.scorer.name, "self");
     assert_eq!(table.scorer.model, "claude-haiku-4-5");
     assert_eq!(table.scorer.api_key_cmd.as_deref(), Some("pass show anthropic"));
     assert_eq!(table.scorer.max_session_usd, 0.5);
