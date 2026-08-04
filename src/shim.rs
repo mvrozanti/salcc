@@ -85,11 +85,73 @@ pub fn bin_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".local/bin"))
 }
 
+fn path_dirs() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default()
+}
+
+fn dir_index(dirs: &[PathBuf], target: &Path) -> Option<usize> {
+    let target = target.canonicalize().ok()?;
+    dirs.iter().position(|d| d.canonicalize().ok().as_deref() == Some(&target))
+}
+
+fn is_writable_dir(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".salcc-write-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Where a shim for `agent` must live to actually take effect: a writable
+/// PATH dir ahead of the real binary. Prefers the user bin dir when it
+/// qualifies; falls back to it (shadowed) when nothing ahead is writable.
+fn choose_shim_dir(agent: &str) -> anyhow::Result<(PathBuf, Option<PathBuf>, bool)> {
+    let real = resolve_real_binary(agent);
+    let dirs = path_dirs();
+    let real_idx = real
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(|p| dir_index(&dirs, p))
+        .unwrap_or(usize::MAX);
+    let preferred = bin_dir();
+    if real_idx == usize::MAX {
+        let pref =
+            preferred.ok_or_else(|| anyhow::anyhow!("no home directory for a bin dir"))?;
+        std::fs::create_dir_all(&pref)?;
+        return Ok((pref, real, false));
+    }
+    if let Some(pref) = &preferred {
+        let pidx = dir_index(&dirs, pref).unwrap_or(usize::MAX);
+        let _ = std::fs::create_dir_all(pref);
+        if pidx < real_idx && is_writable_dir(pref) {
+            return Ok((pref.clone(), real, false));
+        }
+    }
+    for (idx, dir) in dirs.iter().enumerate() {
+        if idx >= real_idx {
+            break;
+        }
+        if is_writable_dir(dir) {
+            return Ok((dir.clone(), real, false));
+        }
+    }
+    let fallback = preferred.ok_or_else(|| anyhow::anyhow!("no home directory for a bin dir"))?;
+    std::fs::create_dir_all(&fallback)?;
+    Ok((fallback, real, true))
+}
+
 pub fn link(agents: &[String], force: bool) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?.canonicalize()?;
-    let dir = bin_dir().ok_or_else(|| anyhow::anyhow!("no home directory for a bin dir"))?;
-    std::fs::create_dir_all(&dir)?;
     for agent in agents {
+        let (dir, real, shadowed) = choose_shim_dir(agent)?;
         let target = dir.join(agent);
         match std::fs::symlink_metadata(&target) {
             Ok(meta) if meta.file_type().is_symlink() => {
@@ -98,7 +160,7 @@ pub fn link(agents: &[String], force: bool) -> anyhow::Result<()> {
                     .and_then(|p| p.canonicalize().ok())
                     == Some(exe.clone())
                 {
-                    println!("{agent}: already linked");
+                    println!("{agent}: already linked ({})", target.display());
                     continue;
                 }
                 if !force {
@@ -120,56 +182,48 @@ pub fn link(agents: &[String], force: bool) -> anyhow::Result<()> {
             Err(_) => {}
         }
         std::os::unix::fs::symlink(&exe, &target)?;
-        match resolve_real_binary(agent) {
-            Some(real) => println!("{agent}: linked → salcc (wrapping {})", real.display()),
-            None => println!(
-                "{agent}: linked → salcc, but no real `{agent}` is on PATH yet"
-            ),
+        match &real {
+            Some(real) => println!("{agent}: linked {} → salcc (wrapping {})", target.display(), real.display()),
+            None => println!("{agent}: linked {} → salcc, but no real `{agent}` is on PATH yet", target.display()),
         }
-        warn_if_shadowed(&dir, agent);
+        if shadowed {
+            println!(
+                "  warning: {} is not on PATH ahead of the real `{agent}`; the shim will not take effect until an earlier PATH dir is writable or you add {} ahead",
+                dir.display(),
+                dir.display()
+            );
+        }
     }
     Ok(())
+}
+
+fn shim_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = bin_dir().into_iter().collect::<Vec<_>>();
+    dirs.extend(path_dirs());
+    dirs
 }
 
 pub fn unlink(agents: &[String]) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?.canonicalize().ok();
-    let dir = bin_dir().ok_or_else(|| anyhow::anyhow!("no home directory for a bin dir"))?;
+    let dirs = shim_search_dirs();
     for agent in agents {
-        let target = dir.join(agent);
-        let is_ours = std::fs::symlink_metadata(&target)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-            && std::fs::read_link(&target)
-                .ok()
-                .and_then(|p| p.canonicalize().ok())
-                == exe;
-        if is_ours {
-            std::fs::remove_file(&target)?;
-            println!("{agent}: unlinked");
-        } else {
-            println!("{agent}: no salcc shim at {}", target.display());
+        let mut removed = false;
+        for dir in &dirs {
+            let target = dir.join(agent);
+            let is_ours = std::fs::symlink_metadata(&target)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+                && std::fs::read_link(&target).ok().and_then(|p| p.canonicalize().ok()) == exe;
+            if is_ours {
+                std::fs::remove_file(&target)?;
+                println!("{agent}: unlinked {}", target.display());
+                removed = true;
+            }
+        }
+        if !removed {
+            println!("{agent}: no salcc shim found");
         }
     }
     Ok(())
 }
 
-fn warn_if_shadowed(shim_dir: &Path, agent: &str) {
-    let Some(path) = std::env::var_os("PATH") else {
-        return;
-    };
-    let shim_canon = shim_dir.canonicalize().ok();
-    for dir in std::env::split_paths(&path) {
-        if dir.canonicalize().ok() == shim_canon {
-            return;
-        }
-        if is_executable_file(&dir.join(agent)) {
-            println!(
-                "  warning: {} comes before {} on PATH — the shim will not take effect until {} is earlier (or restart your shell if it was just created)",
-                dir.display(),
-                shim_dir.display(),
-                shim_dir.display()
-            );
-            return;
-        }
-    }
-}
