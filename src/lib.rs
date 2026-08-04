@@ -11,6 +11,7 @@ pub mod emit;
 pub mod map;
 pub mod proxy;
 pub mod score;
+pub mod shell_init;
 pub mod stats;
 pub mod tail;
 pub mod term;

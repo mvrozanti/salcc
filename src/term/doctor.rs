@@ -38,6 +38,7 @@ pub fn run(verify: bool) -> anyhow::Result<()> {
     let mut out = String::new();
     render_terminal(&mut out);
     render_config(&mut out);
+    render_integration(&mut out);
     render_transcripts(&mut out);
     render_metrics(&mut out);
     let passed = if verify { render_verify(&mut out) } else { true };
@@ -158,6 +159,25 @@ fn render_config(out: &mut String) {
         };
         line(out, "key resolution", resolution);
     }
+    let _ = writeln!(out);
+}
+
+fn render_integration(out: &mut String) {
+    let config = Config::path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| Config::from_yaml(&t).ok())
+        .unwrap_or_default();
+    let _ = writeln!(out, "integration");
+    line(out, "wrapped agents", config.agents.join(", "));
+    line(
+        out,
+        "active",
+        if std::env::var_os("SALCC_ACTIVE").is_some() {
+            "yes (running inside salcc)"
+        } else {
+            "no — add `eval \"$(salcc init zsh)\"` to your shell rc, then run your agent normally"
+        },
+    );
     let _ = writeln!(out);
 }
 

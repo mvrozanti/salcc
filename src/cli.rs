@@ -87,6 +87,14 @@ pub enum Command {
     Completions {
         shell: clap_complete::Shell,
     },
+    /// Emit shell integration to eval, wrapping your agents transparently
+    ///
+    /// Add to your shell rc: `eval "$(salcc init zsh)"` (bash the same;
+    /// fish: `salcc init fish | source`). Then run `claude` as usual.
+    Init {
+        /// zsh, bash, or fish
+        shell: String,
+    },
 }
 
 pub fn run(args: Cli) -> anyhow::Result<()> {
@@ -104,6 +112,7 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
                 other => Ok(other?),
             }
         }
+        Some(Command::Init { shell }) => run_init(&shell),
         None => {
             if args.child.is_empty() {
                 anyhow::bail!("usage: salcc <command...>  (e.g. `salcc claude`)");
@@ -111,6 +120,18 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
             let code = run_proxy(&args.child, args.no_style)?;
             std::process::exit(code)
         }
+    }
+}
+
+fn run_init(shell: &str) -> anyhow::Result<()> {
+    let shell = shell
+        .parse::<crate::shell_init::InitShell>()
+        .map_err(|err| anyhow::anyhow!(err))?;
+    let config = Config::load();
+    let script = crate::shell_init::render(shell, &config.agents);
+    match std::io::stdout().write_all(script.as_bytes()) {
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => Ok(other?),
     }
 }
 

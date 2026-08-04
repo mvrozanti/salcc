@@ -75,11 +75,40 @@ salcc claude
 the Claude Code transcript for clean text to score. Escape hatches:
 `NO_COLOR=1` or `salcc --no-style <cmd>` for bit-perfect passthrough.
 
+## Seamless shell integration
+
+Typing `salcc claude` gets old. Add one line to your shell rc and just run
+your agent the way you always have — `claude` transparently becomes the
+wrapped `claude`:
+
+```sh
+# ~/.zshrc
+eval "$(salcc init zsh)"
+
+# ~/.bashrc
+eval "$(salcc init bash)"
+
+# ~/.config/fish/config.fish
+salcc init fish | source
+```
+
+This defines a thin wrapper function per configured agent (default: just
+`claude`; set `agents:` in the config to add `codex`, `gemini`, …). The
+wrapper is safe by construction: it exports `SALCC_ACTIVE` so an agent that
+spawns a subshell can never nest proxies, it uses `command` so the real
+binary is always what actually execs (no loop), it survives a pre-existing
+`alias claude=…`, and it degrades to the real agent if `salcc` isn't on
+`PATH`. Nothing about how you invoke the agent changes — `NO_COLOR`,
+`--no-style`, pipes, and non-interactive use all still pass through
+untouched. `salcc doctor` shows which agents are wrapped and whether you're
+currently inside a salcc session.
+
 ```sh
 salcc doctor                 # terminal caps, config parse status, key
                              # resolution, transcript discovery, metrics
 salcc doctor --verify        # + PTY round-trip byte-identity self-check
 salcc completions zsh        # shell completions (zsh/bash/fish) to stdout
+salcc init zsh               # shell integration to eval (see below)
 ```
 
 `salcc doctor` is where config problems surface: YAML parse errors print
@@ -99,6 +128,7 @@ scorer:
   api_key_env: ANTHROPIC_API_KEY
   max_session_usd: 0.50      # hard stop when exceeded
   min_block_words: 20        # shorter blocks are never sent to the LLM
+agents: [claude]             # which CLIs `salcc init` wraps transparently
 hold_ms: 150
 density_budget: 0.12
 facets:                      # per-facet toggles, all default true

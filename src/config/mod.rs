@@ -123,6 +123,7 @@ pub struct Config {
     pub dimensions: Vec<UserDimension>,
     pub scorer: ScorerConfig,
     pub llm_can_veto: VetoPolicy,
+    pub agents: Vec<String>,
 }
 
 impl Default for Config {
@@ -135,6 +136,7 @@ impl Default for Config {
             dimensions: Vec::new(),
             scorer: ScorerConfig::default(),
             llm_can_veto: VetoPolicy::default(),
+            agents: vec!["claude".to_string()],
         }
     }
 }
@@ -254,6 +256,11 @@ impl Config {
                 llm_hint: raw_dim.llm_hint,
             });
         }
+        if let Some(agents) = raw.agents {
+            if !agents.is_empty() {
+                config.agents = agents;
+            }
+        }
         config
     }
 }
@@ -282,6 +289,7 @@ struct RawConfig {
     #[serde(default)]
     scorer: Option<RawScorer>,
     llm_can_veto: Option<HashMap<String, bool>>,
+    agents: Option<Vec<String>>,
     #[serde(default)]
     #[allow(dead_code)]
     profiles: Option<HashMap<String, serde_norway::Value>>,

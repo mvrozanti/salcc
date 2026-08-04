@@ -52,6 +52,7 @@ pub fn spawn_child(argv: &[String], size: PtySize) -> Result<SpawnedChild> {
     }
     let mut cmd = CommandBuilder::new(&argv[0]);
     cmd.args(&argv[1..]);
+    cmd.env("SALCC_ACTIVE", "1");
     if let Ok(cwd) = std::env::current_dir() {
         cmd.cwd(cwd);
     }
