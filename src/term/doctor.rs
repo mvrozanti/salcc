@@ -186,21 +186,12 @@ fn render_integration(out: &mut String) {
 }
 
 fn shim_status(agent: &str) -> String {
-    let Some(target) = crate::shim::bin_dir().map(|d| d.join(agent)) else {
-        return "no bin dir".to_string();
-    };
-    let self_canon = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
-    let is_ours = std::fs::symlink_metadata(&target)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-        && std::fs::read_link(&target).ok().and_then(|p| p.canonicalize().ok()) == self_canon;
-    if is_ours {
-        match crate::shim::resolve_real_binary(agent) {
-            Some(real) => format!("shim installed → {}", real.display()),
-            None => "shim installed (no real binary found behind it)".to_string(),
-        }
-    } else {
-        "no shim (run `salcc link`)".to_string()
+    match crate::shim::installed_shim(agent) {
+        Some(path) => match crate::shim::resolve_real_binary(agent) {
+            Some(real) => format!("shim at {} → {}", path.display(), real.display()),
+            None => format!("shim at {} (no real binary behind it)", path.display()),
+        },
+        None => "no shim (run `salcc link`)".to_string(),
     }
 }
 

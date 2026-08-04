@@ -203,6 +203,22 @@ fn shim_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Path of an installed salcc shim for `agent`, searching every candidate dir.
+pub fn installed_shim(agent: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok())?;
+    for dir in shim_search_dirs() {
+        let target = dir.join(agent);
+        let is_ours = std::fs::symlink_metadata(&target)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+            && std::fs::read_link(&target).ok().and_then(|p| p.canonicalize().ok()) == Some(exe.clone());
+        if is_ours {
+            return Some(target);
+        }
+    }
+    None
+}
+
 pub fn unlink(agents: &[String]) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?.canonicalize().ok();
     let dirs = shim_search_dirs();
