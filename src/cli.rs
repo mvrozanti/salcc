@@ -95,6 +95,22 @@ pub enum Command {
         /// zsh, bash, or fish
         shell: String,
     },
+    /// Install PATH shims so `claude` (etc.) transparently runs through salcc
+    ///
+    /// Creates a symlink per agent in your user bin dir. No shell rc edit;
+    /// works in every shell and script. Run `claude` exactly as before.
+    Link {
+        /// Agents to shim (default: the `agents` config list)
+        agents: Vec<String>,
+        /// Replace an existing non-salcc file at the target path
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove salcc PATH shims created by `salcc link`
+    Unlink {
+        /// Agents to unshim (default: the `agents` config list)
+        agents: Vec<String>,
+    },
 }
 
 pub fn run(args: Cli) -> anyhow::Result<()> {
@@ -113,6 +129,10 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
             }
         }
         Some(Command::Init { shell }) => run_init(&shell),
+        Some(Command::Link { agents, force }) => {
+            crate::shim::link(&resolve_agents(agents), force)
+        }
+        Some(Command::Unlink { agents }) => crate::shim::unlink(&resolve_agents(agents)),
         None => {
             if args.child.is_empty() {
                 anyhow::bail!("usage: salcc <command...>  (e.g. `salcc claude`)");
@@ -120,6 +140,14 @@ pub fn run(args: Cli) -> anyhow::Result<()> {
             let code = run_proxy(&args.child, args.no_style)?;
             std::process::exit(code)
         }
+    }
+}
+
+fn resolve_agents(agents: Vec<String>) -> Vec<String> {
+    if agents.is_empty() {
+        Config::load().agents
+    } else {
+        agents
     }
 }
 
@@ -135,7 +163,7 @@ fn run_init(shell: &str) -> anyhow::Result<()> {
     }
 }
 
-fn run_proxy(child: &[String], no_style: bool) -> anyhow::Result<i32> {
+pub(crate) fn run_proxy(child: &[String], no_style: bool) -> anyhow::Result<i32> {
     let caps = Caps::detect_for_proxy();
     if no_style || !caps.styling_enabled {
         return io_loop::run(child, &mut IdentityTransform);

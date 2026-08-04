@@ -169,16 +169,39 @@ fn render_integration(out: &mut String) {
         .unwrap_or_default();
     let _ = writeln!(out, "integration");
     line(out, "wrapped agents", config.agents.join(", "));
+    for agent in &config.agents {
+        let status = shim_status(agent);
+        line(out, agent, status);
+    }
     line(
         out,
         "active",
         if std::env::var_os("SALCC_ACTIVE").is_some() {
-            "yes (running inside salcc)"
+            "yes (running inside salcc now)".to_string()
         } else {
-            "no — add `eval \"$(salcc init zsh)\"` to your shell rc, then run your agent normally"
+            "no — run `salcc link` for zero-config shims, then run your agent normally".to_string()
         },
     );
     let _ = writeln!(out);
+}
+
+fn shim_status(agent: &str) -> String {
+    let Some(target) = crate::shim::bin_dir().map(|d| d.join(agent)) else {
+        return "no bin dir".to_string();
+    };
+    let self_canon = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let is_ours = std::fs::symlink_metadata(&target)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+        && std::fs::read_link(&target).ok().and_then(|p| p.canonicalize().ok()) == self_canon;
+    if is_ours {
+        match crate::shim::resolve_real_binary(agent) {
+            Some(real) => format!("shim installed → {}", real.display()),
+            None => "shim installed (no real binary found behind it)".to_string(),
+        }
+    } else {
+        "no shim (run `salcc link`)".to_string()
+    }
 }
 
 fn render_transcripts(out: &mut String) {

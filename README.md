@@ -75,40 +75,45 @@ salcc claude
 the Claude Code transcript for clean text to score. Escape hatches:
 `NO_COLOR=1` or `salcc --no-style <cmd>` for bit-perfect passthrough.
 
-## Seamless shell integration
+## Seamless launch
 
-Typing `salcc claude` gets old. Add one line to your shell rc and just run
-your agent the way you always have — `claude` transparently becomes the
-wrapped `claude`:
+Typing `salcc claude` gets old. Run this once:
 
 ```sh
-# ~/.zshrc
-eval "$(salcc init zsh)"
-
-# ~/.bashrc
-eval "$(salcc init bash)"
-
-# ~/.config/fish/config.fish
-salcc init fish | source
+salcc link
 ```
 
-This defines a thin wrapper function per configured agent (default: just
-`claude`; set `agents:` in the config to add `codex`, `gemini`, …). The
-wrapper is safe by construction: it exports `SALCC_ACTIVE` so an agent that
-spawns a subshell can never nest proxies, it uses `command` so the real
-binary is always what actually execs (no loop), it survives a pre-existing
-`alias claude=…`, and it degrades to the real agent if `salcc` isn't on
-`PATH`. Nothing about how you invoke the agent changes — `NO_COLOR`,
+It installs a PATH shim — a symlink named `claude` (in `$XDG_BIN_HOME` or
+`~/.local/bin`) that *is* salcc. From then on you type `claude` exactly as
+before and transparently get the styling layer, in **every shell and every
+script**, with no rc file to edit. `salcc unlink` removes it. `salcc link
+codex gemini` (or an `agents:` list in the config) shims more agents.
+
+It's recursion-safe by construction: salcc resolves the real agent by
+skipping its own symlink, spawns it by absolute path (bypassing the shim),
+and exports `SALCC_ACTIVE` so an agent that spawns a subshell can never nest
+proxies. It refuses to clobber a non-salcc file, and `salcc doctor` shows
+each agent's shim status. If your bin dir isn't ahead of the real binary on
+`PATH`, `link` says so.
+
+<details><summary>Prefer a shell function instead of a PATH shim?</summary>
+
+`eval "$(salcc init zsh)"` (or `bash`, or `salcc init fish | source`) defines
+an equivalent wrapper function in your rc. Same guarantees; use it if you
+don't want a symlink in your bin dir.
+</details>
+
+Either way, nothing about how you invoke the agent changes — `NO_COLOR`,
 `--no-style`, pipes, and non-interactive use all still pass through
-untouched. `salcc doctor` shows which agents are wrapped and whether you're
-currently inside a salcc session.
+untouched.
 
 ```sh
 salcc doctor                 # terminal caps, config parse status, key
                              # resolution, transcript discovery, metrics
 salcc doctor --verify        # + PTY round-trip byte-identity self-check
 salcc completions zsh        # shell completions (zsh/bash/fish) to stdout
-salcc init zsh               # shell integration to eval (see below)
+salcc link                   # install PATH shims — type `claude` as usual (see below)
+salcc unlink                 # remove them
 ```
 
 `salcc doctor` is where config problems surface: YAML parse errors print

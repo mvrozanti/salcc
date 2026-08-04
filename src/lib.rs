@@ -12,6 +12,7 @@ pub mod map;
 pub mod proxy;
 pub mod score;
 pub mod shell_init;
+pub mod shim;
 pub mod stats;
 pub mod tail;
 pub mod term;
