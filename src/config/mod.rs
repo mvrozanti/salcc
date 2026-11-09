@@ -256,10 +256,10 @@ impl Config {
                 llm_hint: raw_dim.llm_hint,
             });
         }
-        if let Some(agents) = raw.agents {
-            if !agents.is_empty() {
-                config.agents = agents;
-            }
+        if let Some(agents) = raw.agents
+            && !agents.is_empty()
+        {
+            config.agents = agents;
         }
         config
     }
