@@ -296,6 +296,7 @@ fn run_cat_in_pty(file: &Path) -> anyhow::Result<Vec<u8>> {
     let mut cmd = CommandBuilder::new(exe);
     cmd.arg("cat");
     cmd.arg(file);
+    cmd.cwd(std::env::current_dir()?);
     let mut child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader()?;
