@@ -17,6 +17,7 @@
           version = "0.1.0";
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
+          nativeCheckInputs = [ pkgs.cacert ];
         };
 
         devShells.default = pkgs.mkShell {

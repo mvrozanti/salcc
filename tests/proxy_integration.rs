@@ -24,6 +24,7 @@ where
     let pair = native_pty_system().openpty(PtySize::default()).unwrap();
     let mut cmd = portable_pty::CommandBuilder::new(env!("CARGO_BIN_EXE_salcc"));
     cmd.args(args);
+    cmd.cwd(std::env::current_dir().unwrap());
     let mut child = pair.slave.spawn_command(cmd).unwrap();
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().unwrap();
